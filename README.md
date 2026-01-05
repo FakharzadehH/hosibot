@@ -116,7 +116,6 @@ To update your bot to the latest version, use the following command:
 ```bash
 curl -o install.sh -L https://raw.githubusercontent.com/mahdiMGF2/botmirzapanel/main/install.sh && bash install.sh
 ```
-سث
 When prompted, **select option update** to remove the bot.
 ---
 
