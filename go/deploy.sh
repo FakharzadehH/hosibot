@@ -10,6 +10,8 @@ RUNTIME_DIR="$SCRIPT_DIR/runtime"
 LOG_FILE="$RUNTIME_DIR/hosibot.log"
 PID_FILE="$RUNTIME_DIR/hosibot.pid"
 SERVICE_NAME="${SERVICE_NAME:-hosibot.service}"
+RELEASE_REPO="${RELEASE_REPO:-FakharzadehH/hosibot}"
+RELEASE_API_URL="${RELEASE_API_URL:-https://api.github.com/repos/${RELEASE_REPO}/releases/latest}"
 
 # Colors
 C_RESET='\033[0m'
@@ -45,7 +47,9 @@ warn() { printf "%b\n" "${C_YELLOW}[WARN]${C_RESET} $*"; }
 error() { printf "%b\n" "${C_RED}[ERR]${C_RESET} $*"; }
 
 pause() {
-  read -r -p "Press Enter to continue..." _
+  if [[ -t 0 ]]; then
+    read -r -p "Press Enter to continue..." _
+  fi
 }
 
 require_cmd() {
@@ -186,30 +190,110 @@ print_service_status() {
   fi
 }
 
+install_mysql_stack() {
+  info "Installing MySQL-compatible database packages (server + client)"
+
+  if command -v apt-get >/dev/null 2>&1; then
+    if run_root apt-get install -y default-mysql-server default-mysql-client; then
+      success "Installed default-mysql packages"
+    elif run_root apt-get install -y mariadb-server mariadb-client; then
+      success "Installed MariaDB packages"
+    elif run_root apt-get install -y mysql-server mysql-client; then
+      success "Installed MySQL packages"
+    else
+      warn "Could not install MySQL/MariaDB packages via apt"
+    fi
+    return
+  fi
+
+  if command -v dnf >/dev/null 2>&1; then
+    if run_root dnf install -y mariadb-server mariadb; then
+      success "Installed MariaDB packages"
+    elif run_root dnf install -y mysql-server mysql; then
+      success "Installed MySQL packages"
+    else
+      warn "Could not install MySQL/MariaDB packages via dnf"
+    fi
+    return
+  fi
+
+  if command -v yum >/dev/null 2>&1; then
+    if run_root yum install -y mariadb-server mariadb; then
+      success "Installed MariaDB packages"
+    elif run_root yum install -y mysql-server mysql; then
+      success "Installed MySQL packages"
+    else
+      warn "Could not install MySQL/MariaDB packages via yum"
+    fi
+    return
+  fi
+
+  if command -v pacman >/dev/null 2>&1; then
+    if run_root pacman -Sy --noconfirm mariadb; then
+      success "Installed MariaDB package"
+    else
+      warn "Could not install MariaDB package via pacman"
+    fi
+    return
+  fi
+
+  warn "Unsupported package manager. Install MySQL/MariaDB manually."
+}
+
+start_mysql_service() {
+  if ! command -v systemctl >/dev/null 2>&1; then
+    warn "systemctl not found; skipping automatic DB service start"
+    return
+  fi
+
+  local svc
+  for svc in mysql mariadb mysqld; do
+    if systemctl list-unit-files | awk '{print $1}' | grep -qx "${svc}.service"; then
+      run_root systemctl enable --now "${svc}.service" || true
+      if systemctl is-active --quiet "${svc}.service"; then
+        success "Database service is active: ${svc}.service"
+      else
+        warn "Database service exists but is not active: ${svc}.service"
+      fi
+      return
+    fi
+  done
+
+  warn "No mysql/mariadb systemd service unit detected"
+}
+
 install_dependencies() {
   banner
   info "Installing deployment dependencies"
 
-  local pkgs=(curl git ca-certificates)
-  local go_pkgs=(golang-go)
+  local pkgs=(curl git ca-certificates jq tar gzip unzip python3)
 
   if command -v apt-get >/dev/null 2>&1; then
     run_root apt-get update
-    run_root apt-get install -y "${pkgs[@]}" build-essential "${go_pkgs[@]}"
+    run_root apt-get install -y "${pkgs[@]}"
   elif command -v dnf >/dev/null 2>&1; then
-    run_root dnf install -y "${pkgs[@]}" gcc gcc-c++ make golang
+    run_root dnf install -y "${pkgs[@]}"
   elif command -v yum >/dev/null 2>&1; then
-    run_root yum install -y "${pkgs[@]}" gcc gcc-c++ make golang
+    run_root yum install -y "${pkgs[@]}"
   elif command -v pacman >/dev/null 2>&1; then
-    run_root pacman -Sy --noconfirm "${pkgs[@]}" base-devel go
+    run_root pacman -Sy --noconfirm "${pkgs[@]}"
   else
-    warn "No supported package manager found. Install Go, Git and Curl manually."
+    warn "No supported package manager found. Install curl/git/jq/python3 manually."
   fi
 
-  if command -v go >/dev/null 2>&1; then
-    success "Go found: $(go version)"
+  if command -v jq >/dev/null 2>&1; then
+    success "jq found: $(jq --version)"
   else
-    warn "Go is still missing. Install it manually and re-run this step."
+    warn "jq is missing (script will fallback to python3/json parsing)."
+  fi
+
+  install_mysql_stack
+  start_mysql_service
+
+  if command -v mysql >/dev/null 2>&1; then
+    success "mysql client found: $(mysql --version | head -n1)"
+  else
+    warn "mysql client still not found. Install DB client manually if required."
   fi
 
   pause
@@ -301,25 +385,188 @@ configure_env_wizard() {
   pause
 }
 
+normalize_os_arch() {
+  local os arch
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m | tr '[:upper:]' '[:lower:]')"
+
+  case "$arch" in
+    x86_64|amd64) arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    armv7l|armv7) arch="armv7" ;;
+    armv6l|armv6) arch="armv6" ;;
+    i386|i686) arch="386" ;;
+    *) ;;
+  esac
+
+  printf "%s %s" "$os" "$arch"
+}
+
+resolve_latest_release_asset() {
+  local json_file="$1"
+  local os="$2"
+  local arch="$3"
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -r --arg os "$os" --arg arch "$arch" '
+      def pick_asset:
+        (
+          [.assets[] | {
+            name: (.name // ""),
+            lname: ((.name // "") | ascii_downcase),
+            url: (.browser_download_url // ""),
+            digest: (.digest // "")
+          }] as $a
+          | (
+              ($a | map(select((.lname | test($os)) and (.lname | test($arch)))) | .[0])
+              // ($a | map(select((.url | ascii_downcase | test($os)) and (.url | ascii_downcase | test($arch)))) | .[0])
+              // ($a | map(select(.name == "hosibot")) | .[0])
+              // ($a | .[0])
+            )
+        );
+      (pick_asset) as $picked
+      | [.tag_name, .html_url, ($picked.name // ""), ($picked.url // ""), ($picked.digest // "")]
+      | @tsv
+    ' "$json_file"
+    return
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$json_file" "$os" "$arch" <<'PY'
+import json, sys
+path, os_name, arch = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+assets = data.get("assets", []) or []
+picked = None
+for a in assets:
+    n = (a.get("name") or "").lower()
+    u = (a.get("browser_download_url") or "").lower()
+    if os_name in n and arch in n:
+        picked = a
+        break
+if not picked:
+    for a in assets:
+        u = (a.get("browser_download_url") or "").lower()
+        if os_name in u and arch in u:
+            picked = a
+            break
+if not picked:
+    for a in assets:
+        if (a.get("name") or "") == "hosibot":
+            picked = a
+            break
+if not picked and assets:
+    picked = assets[0]
+tag = data.get("tag_name", "")
+html = data.get("html_url", "")
+name = picked.get("name", "") if picked else ""
+url = picked.get("browser_download_url", "") if picked else ""
+digest = picked.get("digest", "") if picked else ""
+print("\t".join([tag, html, name, url, digest]))
+PY
+    return
+  fi
+
+  local tag release_url asset_url asset_name
+  tag="$(grep -m1 '"tag_name"' "$json_file" | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+  release_url="$(grep -m1 '"html_url"' "$json_file" | sed -E 's/.*"html_url": *"([^"]+)".*/\1/')"
+  asset_url="$(grep -m1 '"browser_download_url"' "$json_file" | sed -E 's/.*"browser_download_url": *"([^"]+)".*/\1/')"
+  asset_name="$(basename "$asset_url")"
+  printf "%s\t%s\t%s\t%s\t%s\n" "$tag" "$release_url" "$asset_name" "$asset_url" ""
+}
+
 build_binary() {
   banner
-  require_cmd go || { pause; return; }
+  require_cmd curl || { pause; return; }
   ensure_dirs
 
-  info "Downloading modules"
-  (cd "$SCRIPT_DIR" && go mod download)
+  local os arch
+  read -r os arch <<<"$(normalize_os_arch)"
+  info "Detected platform: ${os}/${arch}"
 
-  info "Building binary"
-  (cd "$SCRIPT_DIR" && go build -o "$BIN_PATH" ./cmd)
+  local tmp_dir json_file
+  tmp_dir="$(mktemp -d)"
+  json_file="$tmp_dir/release.json"
 
-  success "Build completed: $BIN_PATH"
+  info "Fetching latest release metadata from $RELEASE_REPO"
+  if ! curl -fsSL -H "Accept: application/vnd.github+json" "$RELEASE_API_URL" -o "$json_file"; then
+    error "Failed to fetch latest release metadata"
+    rm -rf "$tmp_dir"
+    pause
+    return
+  fi
+
+  local tag release_url asset_name asset_url digest
+  IFS=$'\t' read -r tag release_url asset_name asset_url digest < <(resolve_latest_release_asset "$json_file" "$os" "$arch")
+
+  if [[ -z "${asset_url:-}" ]]; then
+    error "No downloadable asset found in latest release."
+    rm -rf "$tmp_dir"
+    pause
+    return
+  fi
+
+  info "Latest release: ${tag:-unknown}"
+  info "Release page: ${release_url:-N/A}"
+  info "Selected asset: ${asset_name:-$(basename "$asset_url")}"
+
+  local download_path
+  download_path="$tmp_dir/${asset_name:-asset.bin}"
+
+  info "Downloading asset..."
+  if ! curl -fL --retry 3 --retry-delay 2 "$asset_url" -o "$download_path"; then
+    error "Failed to download release asset"
+    rm -rf "$tmp_dir"
+    pause
+    return
+  fi
+
+  local extracted_bin=""
+  case "$download_path" in
+    *.tar.gz|*.tgz)
+      tar -xzf "$download_path" -C "$tmp_dir"
+      extracted_bin="$(find "$tmp_dir" -maxdepth 3 -type f -name 'hosibot*' -perm -u+x | head -n1 || true)"
+      ;;
+    *.zip)
+      if command -v unzip >/dev/null 2>&1; then
+        unzip -o "$download_path" -d "$tmp_dir" >/dev/null
+        extracted_bin="$(find "$tmp_dir" -maxdepth 3 -type f -name 'hosibot*' -perm -u+x | head -n1 || true)"
+      fi
+      ;;
+    *)
+      extracted_bin="$download_path"
+      ;;
+  esac
+
+  if [[ -z "$extracted_bin" || ! -f "$extracted_bin" ]]; then
+    error "Could not locate hosibot binary inside downloaded asset"
+    rm -rf "$tmp_dir"
+    pause
+    return
+  fi
+
+  if [[ -n "$digest" && "$digest" == sha256:* ]] && command -v sha256sum >/dev/null 2>&1; then
+    local expected actual
+    expected="${digest#sha256:}"
+    actual="$(sha256sum "$extracted_bin" | awk '{print $1}')"
+    if [[ "$expected" == "$actual" ]]; then
+      success "SHA256 checksum verified"
+    else
+      warn "Checksum mismatch (expected $expected got $actual)"
+    fi
+  fi
+
+  install -m 755 "$extracted_bin" "$BIN_PATH"
+  success "Binary downloaded and installed: $BIN_PATH"
+  rm -rf "$tmp_dir"
   pause
 }
 
 run_foreground() {
   banner
   if [[ ! -x "$BIN_PATH" ]]; then
-    warn "Binary not found. Building first."
+    warn "Binary not found. Downloading latest release first."
     build_binary
   fi
 
@@ -332,7 +579,7 @@ start_background() {
   ensure_dirs
 
   if [[ ! -x "$BIN_PATH" ]]; then
-    warn "Binary not found. Building first."
+    warn "Binary not found. Downloading latest release first."
     build_binary
   fi
 
@@ -411,7 +658,7 @@ install_systemd_service() {
   require_cmd systemctl || { pause; return; }
 
   if [[ ! -x "$BIN_PATH" ]]; then
-    warn "Binary not found. Building first."
+    warn "Binary not found. Downloading latest release first."
     build_binary
   fi
 
@@ -732,7 +979,7 @@ main_menu() {
 1) Quick deploy (recommended)
 2) Configure .env wizard
 3) Install dependencies
-4) Build binary
+4) Download latest release binary
 5) Run in foreground
 6) Background process manager
 7) Systemd service manager
@@ -767,7 +1014,7 @@ Usage: $(basename "$0") [option]
 Options:
   --menu           Open interactive menu (default)
   --quick-deploy   Run quick deploy flow
-  --build          Build the Go binary
+  --build          Download latest release binary
   --health         Run diagnostics
   --set-webhook    Configure Telegram webhook
   --help           Show this help
