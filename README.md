@@ -1,6 +1,5 @@
 # 🤖 Bot Mirza Panel
 
-
 A Powerful Bot for Selling VPN Services with Auto Configuration Build.
 
 <p align="center">
@@ -18,7 +17,6 @@ A Powerful Bot for Selling VPN Services with Auto Configuration Build.
     </a>
 </p>
 
-
 ---
 
 ## 📚 Table of Contents
@@ -29,6 +27,7 @@ A Powerful Bot for Selling VPN Services with Auto Configuration Build.
   - [Beta Installation](#️-beta-installation)
   - [Updating the Bot](#-updating-bot)
   - [Removing the Bot](#-removing)
+- [🧪 Go Migration (WIP)](#-go-migration-wip)
 - [💵 Financial Support](#-financial-support)
 
 ---
@@ -37,9 +36,10 @@ A Powerful Bot for Selling VPN Services with Auto Configuration Build.
 
 **Mirza Bot** is a feature-rich Telegram bot designed for selling VPN services for platforms like **Marzban**,**3x-ui panels**,**alireza panels**,**pasarguard**,**ibsng**,.... This bot simplifies the process of VPN subscription sales, enabling seamless automation, configuration building, and user management.
 
-Mirza Panel comes in two versions:  
-1. **Free Version** 🆓: Offers basic functionalities to get started with VPN sales.  
-2. **Subscription Version** 💎: Provides advanced features for businesses looking for more customization, detailed analytics, and enhanced management options.  
+Mirza Panel comes in two versions:
+
+1. **Free Version** 🆓: Offers basic functionalities to get started with VPN sales.
+2. **Subscription Version** 💎: Provides advanced features for businesses looking for more customization, detailed analytics, and enhanced management options.
 
 Whether you’re offering trial accounts or managing large-scale VPN services, this bot covers everything you need to run a successful VPN business.
 
@@ -79,6 +79,21 @@ Whether you’re offering trial accounts or managing large-scale VPN services, t
 
 ---
 
+## 🧪 Go Migration (WIP)
+
+The Go rewrite lives on the `go-migration` branch and starts with an Echo-based server scaffold.
+
+### Run the Go server (development)
+
+```pwsh
+Set-Location -Path "D:\Hosibot\hosibot"
+Set-Location -Path ".\go"
+go mod tidy
+go run .\cmd\server\main.go
+```
+
+Then open `http://localhost:8080/health` to verify the server is running.
+
 ### 🔹 **Subscription Version Features**
 
 In addition to the features of the Free Version.
@@ -93,6 +108,7 @@ To read the details, please refer to the link below.
 ### Prerequisites
 
 Ensure you have the following before installation:
+
 - 🖥️ **Ubuntu Server 22**
 - 🌐 **A Domain Name**
 
@@ -106,7 +122,6 @@ curl -o install.sh -L https://raw.githubusercontent.com/mahdiMGF2/mirzabot/main/
 
 When prompted, **select option 1** to complete the installation.
 
-
 ---
 
 ## 🔄 updating bot
@@ -116,8 +131,8 @@ To update your bot to the latest version, use the following command:
 ```bash
 curl -o install.sh -L https://raw.githubusercontent.com/mahdiMGF2/botmirzapanel/main/install.sh && bash install.sh
 ```
-When prompted, **select option update** to remove the bot.
----
+
+## When prompted, **select option update** to remove the bot.
 
 ## ❌ removing
 
