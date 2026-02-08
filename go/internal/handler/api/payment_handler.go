@@ -45,7 +45,7 @@ func (h *PaymentHandler) listPayments(c echo.Context, body map[string]interface{
 		return errorResponse(c, "Failed to retrieve payments")
 	}
 
-	return successResponse(c, "Successful", paginatedResponse(payments, total, page, limit))
+	return successResponse(c, "Successful", paginatedNamedResponse("payments", payments, total, page, limit))
 }
 
 func (h *PaymentHandler) getPayment(c echo.Context, body map[string]interface{}) error {

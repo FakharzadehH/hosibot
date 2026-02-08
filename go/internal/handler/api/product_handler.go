@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
@@ -62,7 +63,14 @@ func (h *ProductHandler) listProducts(c echo.Context, body map[string]interface{
 		return errorResponse(c, "Failed to retrieve products")
 	}
 
-	return successResponse(c, "Successful", paginatedResponse(products, total, page, limit))
+	resp := paginatedNamedResponse("products", products, total, page, limit)
+	if panels, err := h.repos.Panel.FindActive(); err == nil {
+		resp["panels"] = panels
+	}
+	if categories, _, err := h.repos.Setting.FindAllCategories(0, 1, ""); err == nil {
+		resp["category"] = categories
+	}
+	return successResponse(c, "Successful", resp)
 }
 
 func (h *ProductHandler) getProduct(c echo.Context, body map[string]interface{}) error {
@@ -226,8 +234,36 @@ func (h *ProductHandler) setInbounds(c echo.Context, body map[string]interface{}
 	if id == 0 {
 		return errorResponse(c, "id is required")
 	}
+	if strings.TrimSpace(input) == "" {
+		return errorResponse(c, "input is required")
+	}
 
-	if err := h.repos.Product.Update(id, map[string]interface{}{"inbounds": input}); err != nil {
+	product, err := h.repos.Product.FindByID(id)
+	if err != nil {
+		return errorResponse(c, "product not found")
+	}
+
+	panelModel, err := h.repos.Panel.FindByName(product.Location)
+	if err != nil || panelModel == nil {
+		return errorResponse(c, "panel not found")
+	}
+
+	updates := map[string]interface{}{}
+	switch strings.ToLower(strings.TrimSpace(panelModel.Type)) {
+	case "ibsng", "mikrotik":
+		updates["inbounds"] = input
+	case "marzban", "pasarguard":
+		inboundsJSON, proxiesJSON, err := extractPanelTemplate(panelModel, input)
+		if err != nil {
+			return errorResponse(c, err.Error())
+		}
+		updates["inbounds"] = inboundsJSON
+		updates["proxies"] = proxiesJSON
+	default:
+		return errorResponse(c, "panel_not_support_options")
+	}
+
+	if err := h.repos.Product.Update(id, updates); err != nil {
 		return errorResponse(c, "Failed to set inbounds")
 	}
 	return successResponse(c, "Inbounds set successfully", nil)
@@ -239,7 +275,7 @@ func (h *ProductHandler) removeInbounds(c echo.Context, body map[string]interfac
 		return errorResponse(c, "id is required")
 	}
 
-	if err := h.repos.Product.Update(id, map[string]interface{}{"inbounds": ""}); err != nil {
+	if err := h.repos.Product.Update(id, map[string]interface{}{"inbounds": nil, "proxies": nil}); err != nil {
 		return errorResponse(c, "Failed to remove inbounds")
 	}
 	return successResponse(c, "Inbounds removed successfully", nil)

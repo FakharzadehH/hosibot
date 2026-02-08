@@ -143,7 +143,7 @@ func (b *Bot) handleStart(c tele.Context) error {
 
 	_ = b.repos.User.UpdateStep(chatID, "none")
 
-	if user.UserStatus == "blocked" {
+	if strings.EqualFold(user.UserStatus, "blocked") || strings.EqualFold(user.UserStatus, "block") {
 		return c.Send("⛔ حساب شما مسدود شده است.")
 	}
 
@@ -169,7 +169,7 @@ func (b *Bot) handleText(c tele.Context) error {
 		return c.Send("لطفاً از /start استفاده کنید.")
 	}
 
-	if user.UserStatus == "blocked" {
+	if strings.EqualFold(user.UserStatus, "blocked") || strings.EqualFold(user.UserStatus, "block") {
 		return c.Send("⛔ حساب شما مسدود شده است.")
 	}
 

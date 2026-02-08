@@ -2,7 +2,13 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
@@ -109,7 +115,7 @@ func (h *UserHandler) listUsers(c echo.Context, body map[string]interface{}) err
 		return errorResponse(c, "Failed to retrieve users")
 	}
 
-	return successResponse(c, "Successful", paginatedResponse(users, total, page, limit))
+	return successResponse(c, "Successful", paginatedNamedResponse("users", users, total, page, limit))
 }
 
 // getUser - action: "user"
@@ -227,7 +233,22 @@ func (h *UserHandler) changeStatusUser(c echo.Context, body map[string]interface
 		return errorResponse(c, "chat_id is required")
 	}
 
-	if err := h.repos.User.Update(chatID, map[string]interface{}{"User_Status": statusType}); err != nil {
+	user, err := h.repos.User.FindByID(chatID)
+	if err != nil {
+		return errorResponse(c, "User not found")
+	}
+
+	checkStatus := strings.TrimSpace(user.CheckStatus.String)
+	if user.CheckStatus.Valid && checkStatus != "" && checkStatus != "0" {
+		return errorResponse(c, "actions exits")
+	}
+
+	nextStatus := "2"
+	if strings.EqualFold(statusType, "active") {
+		nextStatus = "1"
+	}
+
+	if err := h.repos.User.Update(chatID, map[string]interface{}{"checkstatus": nextStatus}); err != nil {
 		return errorResponse(c, "Failed to update user status")
 	}
 	return successResponse(c, "Successful", nil)
@@ -293,25 +314,57 @@ func (h *UserHandler) sendMessage(c echo.Context, body map[string]interface{}) e
 		return errorResponse(c, "chat_id and text are required")
 	}
 
-	if file != "" && contentType != "" {
-		// Handle file sending based on content type
-		switch contentType {
-		case "image":
-			_, err := h.botAPI.SendPhotoBase64(chatID, file, text)
-			if err != nil {
-				return errorResponse(c, "Failed to send image: "+err.Error())
-			}
-		default:
-			_, err := h.botAPI.SendMessage(chatID, text, nil)
-			if err != nil {
-				return errorResponse(c, "Failed to send message: "+err.Error())
-			}
-		}
-	} else {
+	if file == "" {
 		_, err := h.botAPI.SendMessage(chatID, text, nil)
 		if err != nil {
 			return errorResponse(c, "Failed to send message: "+err.Error())
 		}
+		return successResponse(c, "Message sent successfully", nil)
+	}
+
+	if contentType == "" {
+		return errorResponse(c, "content_type is required")
+	}
+
+	contentType = strings.TrimSpace(contentType)
+	parts := strings.SplitN(contentType, "/", 2)
+	mainType := strings.ToLower(parts[0])
+	subType := ""
+	if len(parts) > 1 {
+		subType = strings.ToLower(strings.TrimSpace(parts[1]))
+	}
+
+	switch mainType {
+	case "image":
+		_, err := h.botAPI.SendPhotoBase64(chatID, file, text)
+		if err != nil {
+			return errorResponse(c, "Failed to send image: "+err.Error())
+		}
+	case "video":
+		_, err := h.botAPI.SendVideoBase64(chatID, file, text)
+		if err != nil {
+			return errorResponse(c, "Failed to send video: "+err.Error())
+		}
+	case "application":
+		filename := "file.pdf"
+		if subType != "" && subType != "pdf" {
+			filename = "file." + sanitizeFileExt(subType)
+		}
+		_, err := h.botAPI.SendDocumentBase64(chatID, file, filename, text)
+		if err != nil {
+			return errorResponse(c, "Failed to send document: "+err.Error())
+		}
+	case "audio":
+		filename := "file.mp3"
+		if subType != "" {
+			filename = "file." + sanitizeFileExt(subType)
+		}
+		_, err := h.botAPI.SendAudioBase64(chatID, file, filename, text)
+		if err != nil {
+			return errorResponse(c, "Failed to send audio: "+err.Error())
+		}
+	default:
+		return errorResponse(c, "content_type invalid")
 	}
 
 	return successResponse(c, "Message sent successfully", nil)
@@ -354,7 +407,7 @@ func (h *UserHandler) joinChannelException(c echo.Context, body map[string]inter
 		return errorResponse(c, "chat_id is required")
 	}
 
-	if err := h.repos.User.Update(chatID, map[string]interface{}{"joinchannel": "1"}); err != nil {
+	if err := h.repos.User.Update(chatID, map[string]interface{}{"joinchannel": "active"}); err != nil {
 		return errorResponse(c, "Failed to set join channel exception")
 	}
 	return successResponse(c, "Successful", nil)
@@ -461,13 +514,23 @@ func (h *UserHandler) setAgent(c echo.Context, body map[string]interface{}) erro
 // setExpireAgent - action: "set_expire_agent"
 func (h *UserHandler) setExpireAgent(c echo.Context, body map[string]interface{}) error {
 	chatID := getStringField(body, "chat_id")
-	expireTime := getIntField(body, "expire_time", 0)
 
 	if chatID == "" {
 		return errorResponse(c, "chat_id is required")
 	}
+	if _, ok := body["expire_time"]; !ok {
+		return errorResponse(c, "expire_time is required")
+	}
 
-	expire := fmt.Sprintf("%d", expireTime)
+	expireDays := getIntField(body, "expire_time", 0)
+	if expireDays == 0 {
+		if err := h.repos.User.Update(chatID, map[string]interface{}{"expire": sql.NullString{Valid: false}}); err != nil {
+			return errorResponse(c, "Failed to set expire agent")
+		}
+		return successResponse(c, "Successful", nil)
+	}
+
+	expire := fmt.Sprintf("%d", time.Now().Unix()+int64(expireDays)*86400)
 	if err := h.repos.User.Update(chatID, map[string]interface{}{"expire": sql.NullString{String: expire, Valid: true}}); err != nil {
 		return errorResponse(c, "Failed to set expire agent")
 	}
@@ -517,6 +580,60 @@ func (h *UserHandler) activeBotAgent(c echo.Context, body map[string]interface{}
 		return errorResponse(c, "chat_id and token are required")
 	}
 
+	totalBots, _ := h.repos.Setting.CountBotSaz()
+	if totalBots >= 15 {
+		return errorResponse(c, "You are allowed to create 15 representative bots in your bot.")
+	}
+
+	userBotCount, _ := h.repos.Setting.CountBotSazByUserID(chatID)
+	if userBotCount > 0 {
+		return errorResponse(c, "You are allowed to build a robot.")
+	}
+
+	tokenCount, _ := h.repos.Setting.CountBotSazByToken(token)
+	if tokenCount > 0 {
+		return errorResponse(c, "You are allowed! Token exits")
+	}
+
+	username, err := getTelegramBotUsername(token)
+	if err != nil {
+		return errorResponse(c, "You are allowed! Token inavlid")
+	}
+
+	if err := h.createAgentBotFiles(chatID, username, token); err != nil {
+		h.logger.Warn("Failed to create bot files", zap.Error(err), zap.String("chat_id", chatID))
+	}
+
+	if err := h.setAgentBotWebhook(chatID, username, token); err != nil {
+		h.logger.Warn("Failed to set agent bot webhook", zap.Error(err), zap.String("chat_id", chatID))
+	}
+
+	settingJSON, _ := json.Marshal(map[string]interface{}{
+		"minpricetime":     4000,
+		"pricetime":        4000,
+		"minpricevolume":   4000,
+		"pricevolume":      4000,
+		"support_username": "@support",
+		"Channel_Report":   0,
+		"cart_info":        "جهت پرداخت مبلغ را به شماره کارت زیر واریز نمایید",
+		"show_product":     true,
+	})
+
+	adminIDsJSON, _ := json.Marshal([]string{chatID})
+	bot := &models.BotSaz{
+		IDUser:    chatID,
+		BotToken:  token,
+		AdminIDs:  string(adminIDsJSON),
+		Username:  username,
+		Time:      time.Now().Format("2006/01/02 15:04:05"),
+		Setting:   string(settingJSON),
+		HidePanel: "{}",
+	}
+
+	if err := h.repos.Setting.CreateBotSaz(bot); err != nil {
+		return errorResponse(c, "Failed to activate bot agent")
+	}
+
 	if err := h.repos.User.Update(chatID, map[string]interface{}{
 		"token": sql.NullString{String: token, Valid: true},
 	}); err != nil {
@@ -530,6 +647,25 @@ func (h *UserHandler) removeAgentBot(c echo.Context, body map[string]interface{}
 	chatID := getStringField(body, "chat_id")
 	if chatID == "" {
 		return errorResponse(c, "chat_id is required")
+	}
+
+	bot, err := h.repos.Setting.FindBotSazByUserID(chatID)
+	if err != nil {
+		return errorResponse(c, "User does not have an active bot.")
+	}
+
+	if err := h.deleteAgentBotFiles(chatID, bot.Username); err != nil {
+		h.logger.Warn("Failed to remove bot files", zap.Error(err), zap.String("chat_id", chatID))
+	}
+
+	if strings.TrimSpace(bot.BotToken) != "" {
+		if err := deleteTelegramWebhook(bot.BotToken); err != nil {
+			h.logger.Warn("Failed to delete bot webhook", zap.Error(err), zap.String("chat_id", chatID))
+		}
+	}
+
+	if err := h.repos.Setting.DeleteBotSazByUserID(chatID); err != nil {
+		return errorResponse(c, "Failed to remove agent bot")
 	}
 
 	if err := h.repos.User.Update(chatID, map[string]interface{}{
@@ -548,10 +684,23 @@ func (h *UserHandler) setPriceVolumeAgentBot(c echo.Context, body map[string]int
 	if chatID == "" {
 		return errorResponse(c, "chat_id is required")
 	}
+	if amount <= 0 {
+		return errorResponse(c, "amount is required")
+	}
 
-	if err := h.repos.User.Update(chatID, map[string]interface{}{
-		"Processing_value": fmt.Sprintf("%d", amount),
-	}); err != nil {
+	bot, err := h.repos.Setting.FindBotSazByUserID(chatID)
+	if err != nil {
+		return errorResponse(c, "User does not have an active bot.")
+	}
+
+	setting := map[string]interface{}{}
+	if strings.TrimSpace(bot.Setting) != "" {
+		_ = json.Unmarshal([]byte(bot.Setting), &setting)
+	}
+	setting["minpricevolume"] = amount
+	b, _ := json.Marshal(setting)
+
+	if err := h.repos.Setting.UpdateBotSazByUserID(chatID, map[string]interface{}{"setting": string(b)}); err != nil {
 		return errorResponse(c, "Failed to set price volume agent bot")
 	}
 	return successResponse(c, "Successful", nil)
@@ -565,10 +714,23 @@ func (h *UserHandler) setPriceTimeAgentBot(c echo.Context, body map[string]inter
 	if chatID == "" {
 		return errorResponse(c, "chat_id is required")
 	}
+	if amount <= 0 {
+		return errorResponse(c, "amount is required")
+	}
 
-	if err := h.repos.User.Update(chatID, map[string]interface{}{
-		"Processing_value_one": fmt.Sprintf("%d", amount),
-	}); err != nil {
+	bot, err := h.repos.Setting.FindBotSazByUserID(chatID)
+	if err != nil {
+		return errorResponse(c, "User does not have an active bot.")
+	}
+
+	setting := map[string]interface{}{}
+	if strings.TrimSpace(bot.Setting) != "" {
+		_ = json.Unmarshal([]byte(bot.Setting), &setting)
+	}
+	setting["minpricetime"] = amount
+	b, _ := json.Marshal(setting)
+
+	if err := h.repos.Setting.UpdateBotSazByUserID(chatID, map[string]interface{}{"setting": string(b)}); err != nil {
 		return errorResponse(c, "Failed to set price time agent bot")
 	}
 	return successResponse(c, "Successful", nil)
@@ -582,9 +744,15 @@ func (h *UserHandler) setPanelAgentShow(c echo.Context, body map[string]interfac
 	if chatID == "" {
 		return errorResponse(c, "chat_id is required")
 	}
+	panelsArr, ok := panels.([]interface{})
+	if !ok {
+		return errorResponse(c, "json invalid")
+	}
 
-	if err := h.repos.User.Update(chatID, map[string]interface{}{
-		"Processing_value_four": fmt.Sprintf("%v", panels),
+	panelsJSON, _ := json.Marshal(panelsArr)
+
+	if err := h.repos.Setting.UpdateBotSazByUserID(chatID, map[string]interface{}{
+		"hide_panel": string(panelsJSON),
 	}); err != nil {
 		return errorResponse(c, "Failed to set panel agent show")
 	}
@@ -606,4 +774,156 @@ func (h *UserHandler) setLimitChangeLocation(c echo.Context, body map[string]int
 		return errorResponse(c, "Failed to set limit change location")
 	}
 	return successResponse(c, "Successful", nil)
+}
+
+func sanitizeFileExt(ext string) string {
+	ext = strings.TrimSpace(strings.ToLower(ext))
+	if ext == "" {
+		return "bin"
+	}
+	out := make([]rune, 0, len(ext))
+	for _, r := range ext {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			out = append(out, r)
+		}
+	}
+	if len(out) == 0 {
+		return "bin"
+	}
+	return string(out)
+}
+
+func getTelegramBotUsername(token string) (string, error) {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", strings.TrimSpace(token))
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Username string `json:"username"`
+		} `json:"result"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if !result.OK || strings.TrimSpace(result.Result.Username) == "" {
+		return "", fmt.Errorf("invalid token")
+	}
+	return strings.TrimSpace(result.Result.Username), nil
+}
+
+func deleteTelegramWebhook(token string) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/deleteWebhook", strings.TrimSpace(token))
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+func (h *UserHandler) setAgentBotWebhook(chatID, username, token string) error {
+	domain := strings.TrimSpace(os.Getenv("BOT_DOMAIN"))
+	if domain == "" {
+		return nil
+	}
+	url := fmt.Sprintf(
+		"https://api.telegram.org/bot%s/setWebhook?url=https://%s/vpnbot/%s%s/index.php",
+		strings.TrimSpace(token),
+		domain,
+		chatID,
+		username,
+	)
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+func (h *UserHandler) createAgentBotFiles(chatID, username, token string) error {
+	baseDir, err := findVPNBotBaseDir()
+	if err != nil {
+		return err
+	}
+
+	sourceDir := filepath.Join(baseDir, "Default")
+	targetDir := filepath.Join(baseDir, chatID+username)
+
+	if _, err := os.Stat(sourceDir); err != nil {
+		return err
+	}
+
+	_ = os.RemoveAll(targetDir)
+	if err := copyDir(sourceDir, targetDir); err != nil {
+		return err
+	}
+
+	configPath := filepath.Join(targetDir, "config.php")
+	content, err := os.ReadFile(configPath)
+	if err == nil {
+		updated := strings.ReplaceAll(string(content), "BotTokenNew", token)
+		if writeErr := os.WriteFile(configPath, []byte(updated), 0o644); writeErr != nil {
+			return writeErr
+		}
+	}
+	return nil
+}
+
+func (h *UserHandler) deleteAgentBotFiles(chatID, username string) error {
+	baseDir, err := findVPNBotBaseDir()
+	if err != nil {
+		return err
+	}
+	targetDir := filepath.Join(baseDir, chatID+username)
+	return os.RemoveAll(targetDir)
+}
+
+func findVPNBotBaseDir() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	candidates := []string{
+		filepath.Join(cwd, "vpnbot"),
+		filepath.Join(cwd, "..", "vpnbot"),
+		filepath.Join(cwd, "..", "..", "vpnbot"),
+	}
+	for _, dir := range candidates {
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			return dir, nil
+		}
+	}
+	return "", fmt.Errorf("vpnbot directory not found")
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(dst, rel)
+
+		if info.IsDir() {
+			return os.MkdirAll(targetPath, info.Mode())
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(targetPath, data, info.Mode())
+	})
 }

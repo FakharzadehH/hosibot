@@ -29,16 +29,51 @@ func errorResponse(c echo.Context, msg string) error {
 }
 
 func paginatedResponse(data interface{}, total int64, page, limit int) models.PaginatedResponse {
-	totalPages := int(total) / limit
-	if int(total)%limit != 0 {
-		totalPages++
-	}
+	totalPages := totalPages(total, limit)
 	return models.PaginatedResponse{
 		Data:       data,
 		Total:      total,
 		Page:       page,
 		Limit:      limit,
 		TotalPages: totalPages,
+	}
+}
+
+func totalPages(total int64, limit int) int {
+	if limit <= 0 {
+		limit = 50
+	}
+	pages := int(total) / limit
+	if int(total)%limit != 0 {
+		pages++
+	}
+	if pages == 0 {
+		pages = 1
+	}
+	return pages
+}
+
+// paginatedNamedResponse returns PHP-compatible list payloads:
+// { "<key>": [...], "pagination": {...} }.
+func paginatedNamedResponse(key string, data interface{}, total int64, page, limit int) map[string]interface{} {
+	pagination := map[string]interface{}{
+		"total_pages":  totalPages(total, limit),
+		"current_page": page,
+		"per_page":     limit,
+	}
+	switch key {
+	case "users":
+		pagination["total_users"] = total
+	case "panels":
+		pagination["total_panel"] = total
+	case "discount":
+		pagination["total_discount"] = total
+	default:
+		pagination["total_record"] = total
+	}
+	return map[string]interface{}{
+		key:          data,
+		"pagination": pagination,
 	}
 }
 
@@ -88,10 +123,11 @@ func getIntField(body map[string]interface{}, key string, defaultVal int) int {
 
 // Repos bundles all repositories needed by API handlers.
 type Repos struct {
-	User    *repository.UserRepository
-	Product *repository.ProductRepository
-	Invoice *repository.InvoiceRepository
-	Payment *repository.PaymentRepository
-	Panel   *repository.PanelRepository
-	Setting *repository.SettingRepository
+	User         *repository.UserRepository
+	Product      *repository.ProductRepository
+	Invoice      *repository.InvoiceRepository
+	Payment      *repository.PaymentRepository
+	Panel        *repository.PanelRepository
+	ServicePanel *repository.ServicePanelRepository
+	Setting      *repository.SettingRepository
 }

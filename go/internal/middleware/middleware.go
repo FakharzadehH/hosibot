@@ -1,8 +1,11 @@
 package middleware
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -59,6 +62,35 @@ func APIAuth(apiKey string, hashFilePath string) echo.MiddlewareFunc {
 func APILogger(settingRepo *repository.SettingRepository) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
+			req := c.Request()
+
+			// Capture and restore body for downstream handlers.
+			var rawBody []byte
+			if req.Body != nil {
+				rawBody, _ = io.ReadAll(req.Body)
+				req.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+			}
+
+			headers := make(map[string]string, len(req.Header))
+			for k, values := range req.Header {
+				headers[k] = strings.Join(values, ",")
+			}
+
+			var payload interface{}
+			if len(rawBody) > 0 {
+				var parsed interface{}
+				if err := json.Unmarshal(rawBody, &parsed); err == nil {
+					payload = parsed
+					if m, ok := parsed.(map[string]interface{}); ok {
+						if action, ok := m["actions"].(string); ok && strings.TrimSpace(action) != "" {
+							c.Set("api_actions", action)
+						}
+					}
+				} else {
+					payload = string(rawBody)
+				}
+			}
+
 			// Execute the handler
 			err := next(c)
 
@@ -68,13 +100,13 @@ func APILogger(settingRepo *repository.SettingRepository) echo.MiddlewareFunc {
 			// Get the actions field from context (set by handler)
 			actions, _ := c.Get("api_actions").(string)
 
-			// Log to database (async, non-blocking)
+			// Log to database (async, non-blocking).
+			headerCopy := headers
+			dataCopy := payload
+			ipCopy := ip
+			actionsCopy := actions
 			go func() {
-				headers := map[string]string{
-					"Token":        c.Request().Header.Get("Token"),
-					"Content-Type": c.Request().Header.Get("Content-Type"),
-				}
-				_ = settingRepo.CreateAPILog(headers, nil, ip, actions)
+				_ = settingRepo.CreateAPILog(headerCopy, dataCopy, ipCopy, actionsCopy)
 			}()
 
 			return err

@@ -14,6 +14,7 @@ import (
 	"hosibot/internal/bot"
 	"hosibot/internal/config"
 	cronpkg "hosibot/internal/cron"
+	"hosibot/internal/middleware"
 	"hosibot/internal/models"
 	"hosibot/internal/pkg/telegram"
 	"hosibot/internal/repository"
@@ -51,6 +52,17 @@ func main() {
 	e := echo.New()
 	e.HideBanner = true
 
+	// --- Webhook Deduper (Redis with in-memory fallback) ---
+	updateDeduper, dedupeErr := middleware.NewUpdateDeduper(
+		cfg.Redis.Addr,
+		cfg.Redis.Pass,
+		cfg.Redis.DB,
+		10*time.Minute,
+	)
+	if dedupeErr != nil {
+		logger.Warn("Redis unavailable for webhook dedup, using in-memory fallback", zap.Error(dedupeErr))
+	}
+
 	// --- Bot ---
 	botRepos := &bot.BotRepos{
 		User:    repository.NewUserRepository(db),
@@ -66,7 +78,7 @@ func main() {
 	}
 
 	// --- Routes ---
-	router.Setup(e, db, botAPI, logger, cfg.API.Key, cfg.API.HashFile, teleBot.WebhookHandler())
+	router.Setup(e, db, botAPI, logger, cfg.API.Key, cfg.API.HashFile, updateDeduper, teleBot.WebhookHandler())
 
 	// --- Cron Scheduler ---
 	cronRepos := &cronpkg.CronRepos{

@@ -24,6 +24,7 @@ func Setup(
 	logger *zap.Logger,
 	apiKey string,
 	hashFilePath string,
+	updateDeduper middleware.UpdateDeduper,
 	webhookHandler http.Handler,
 ) {
 	// Global middleware
@@ -32,12 +33,13 @@ func Setup(
 
 	// Repositories
 	repos := &api.Repos{
-		User:    repository.NewUserRepository(db),
-		Product: repository.NewProductRepository(db),
-		Invoice: repository.NewInvoiceRepository(db),
-		Payment: repository.NewPaymentRepository(db),
-		Panel:   repository.NewPanelRepository(db),
-		Setting: repository.NewSettingRepository(db),
+		User:         repository.NewUserRepository(db),
+		Product:      repository.NewProductRepository(db),
+		Invoice:      repository.NewInvoiceRepository(db),
+		Payment:      repository.NewPaymentRepository(db),
+		Panel:        repository.NewPanelRepository(db),
+		ServicePanel: repository.NewServicePanelRepository(db),
+		Setting:      repository.NewSettingRepository(db),
 	}
 
 	// Handlers
@@ -50,6 +52,7 @@ func Setup(
 	categoryHandler := api.NewCategoryHandler(repos, logger)
 	settingsHandler := api.NewSettingsHandler(repos, logger)
 	serviceHandler := api.NewServiceHandler(repos, logger)
+	legacyHandler := api.NewLegacyHandler(repos, logger, apiKey)
 
 	// Payment callback handler
 	callbackRepos := &handler.CallbackRepos{
@@ -77,10 +80,24 @@ func Setup(
 	apiGroup.POST("/categories", categoryHandler.Handle)
 	apiGroup.POST("/settings", settingsHandler.Handle)
 	apiGroup.POST("/services", serviceHandler.Handle)
+	apiGroup.GET("/log", legacyHandler.LogStats)
+	apiGroup.GET("/statbot", legacyHandler.StatBot)
 
-	// Telegram webhook (protected by IP check)
+	// Legacy endpoints without APIAuth (matching original PHP behavior).
+	e.GET("/api/keyboard", legacyHandler.Keyboard)
+	e.POST("/api/verify", legacyHandler.Verify)
+	e.GET("/api/verify", legacyHandler.Verify)
+
+	// Telegram webhook (protected by IP check + deduplication)
+	botWebhookGroup := e.Group("/bot")
+	botWebhookGroup.Use(middleware.TelegramIPCheck())
+	botWebhookGroup.Use(middleware.TelegramUpdateDedup(updateDeduper))
+	botWebhookGroup.POST("/webhook", echo.WrapHandler(webhookHandler))
+
+	// Legacy webhook route for backward compatibility.
 	webhookGroup := e.Group("/webhook")
 	webhookGroup.Use(middleware.TelegramIPCheck())
+	webhookGroup.Use(middleware.TelegramUpdateDedup(updateDeduper))
 	webhookGroup.POST("/:token", echo.WrapHandler(webhookHandler))
 
 	// Payment callback routes

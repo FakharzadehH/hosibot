@@ -240,6 +240,48 @@ install_mysql_stack() {
   warn "Unsupported package manager. Install MySQL/MariaDB manually."
 }
 
+install_redis_stack() {
+  info "Installing Redis packages (server + cli)"
+
+  if command -v apt-get >/dev/null 2>&1; then
+    if run_root apt-get install -y redis-server redis-tools; then
+      success "Installed Redis packages"
+    else
+      warn "Could not install Redis packages via apt"
+    fi
+    return
+  fi
+
+  if command -v dnf >/dev/null 2>&1; then
+    if run_root dnf install -y redis; then
+      success "Installed Redis package"
+    else
+      warn "Could not install Redis package via dnf"
+    fi
+    return
+  fi
+
+  if command -v yum >/dev/null 2>&1; then
+    if run_root yum install -y redis; then
+      success "Installed Redis package"
+    else
+      warn "Could not install Redis package via yum"
+    fi
+    return
+  fi
+
+  if command -v pacman >/dev/null 2>&1; then
+    if run_root pacman -Sy --noconfirm redis; then
+      success "Installed Redis package"
+    else
+      warn "Could not install Redis package via pacman"
+    fi
+    return
+  fi
+
+  warn "Unsupported package manager. Install Redis manually."
+}
+
 start_mysql_service() {
   if ! command -v systemctl >/dev/null 2>&1; then
     warn "systemctl not found; skipping automatic DB service start"
@@ -260,6 +302,28 @@ start_mysql_service() {
   done
 
   warn "No mysql/mariadb systemd service unit detected"
+}
+
+start_redis_service() {
+  if ! command -v systemctl >/dev/null 2>&1; then
+    warn "systemctl not found; skipping Redis service start"
+    return
+  fi
+
+  local svc
+  for svc in redis redis-server; do
+    if systemctl list-unit-files | awk '{print $1}' | grep -qx "${svc}.service"; then
+      run_root systemctl enable --now "${svc}.service" || true
+      if systemctl is-active --quiet "${svc}.service"; then
+        success "Redis service is active: ${svc}.service"
+      else
+        warn "Redis service exists but is not active: ${svc}.service"
+      fi
+      return
+    fi
+  done
+
+  warn "No redis systemd service unit detected"
 }
 
 install_dependencies() {
@@ -296,6 +360,15 @@ install_dependencies() {
     warn "mysql client still not found. Install DB client manually if required."
   fi
 
+  install_redis_stack
+  start_redis_service
+
+  if command -v redis-cli >/dev/null 2>&1; then
+    success "redis-cli found: $(redis-cli --version)"
+  else
+    warn "redis-cli still not found. Install Redis client manually if required."
+  fi
+
   pause
 }
 
@@ -308,6 +381,7 @@ configure_env_wizard() {
   line
 
   local app_port app_env db_host db_port db_name db_user db_pass db_charset
+  local redis_addr redis_pass redis_db
   local bot_token bot_domain bot_webhook bot_admin bot_username api_key jwt_secret
 
   app_port="${APP_PORT:-8080}"
@@ -318,6 +392,9 @@ configure_env_wizard() {
   db_user="${DB_USER:-root}"
   db_pass="${DB_PASS:-}"
   db_charset="${DB_CHARSET:-utf8mb4}"
+  redis_addr="${REDIS_ADDR:-localhost:6379}"
+  redis_pass="${REDIS_PASS:-}"
+  redis_db="${REDIS_DB:-0}"
   bot_token="${BOT_TOKEN:-}"
   bot_domain="$(normalize_domain "${BOT_DOMAIN:-}")"
   bot_admin="${BOT_ADMIN_ID:-}"
@@ -335,6 +412,10 @@ configure_env_wizard() {
   read -r -s -p "DB_PASS [hidden, Enter to keep current]: " input; printf "\n"
   if [[ -n "$input" ]]; then db_pass="$input"; fi
   read -r -p "DB_CHARSET [$db_charset]: " input; db_charset="${input:-$db_charset}"
+  read -r -p "REDIS_ADDR [$redis_addr]: " input; redis_addr="${input:-$redis_addr}"
+  read -r -s -p "REDIS_PASS [hidden, Enter to keep current]: " input; printf "\n"
+  if [[ -n "$input" ]]; then redis_pass="$input"; fi
+  read -r -p "REDIS_DB [$redis_db]: " input; redis_db="${input:-$redis_db}"
 
   read -r -p "BOT_TOKEN [required, current: $(mask_value "$bot_token")]: " input
   if [[ -n "$input" ]]; then bot_token="$input"; fi
@@ -371,6 +452,9 @@ configure_env_wizard() {
   set_env_value "DB_USER" "$db_user"
   set_env_value "DB_PASS" "$db_pass"
   set_env_value "DB_CHARSET" "$db_charset"
+  set_env_value "REDIS_ADDR" "$redis_addr"
+  set_env_value "REDIS_PASS" "$redis_pass"
+  set_env_value "REDIS_DB" "$redis_db"
 
   set_env_value "BOT_TOKEN" "$bot_token"
   set_env_value "BOT_DOMAIN" "$bot_domain"
@@ -812,6 +896,7 @@ health_check() {
   info "Environment summary"
   printf "APP_PORT=%s\n" "${APP_PORT:-}"
   printf "DB_HOST=%s DB_PORT=%s DB_NAME=%s\n" "${DB_HOST:-}" "${DB_PORT:-}" "${DB_NAME:-}"
+  printf "REDIS_ADDR=%s REDIS_DB=%s\n" "${REDIS_ADDR:-}" "${REDIS_DB:-}"
   printf "BOT_DOMAIN=%s\n" "${BOT_DOMAIN:-}"
   printf "BOT_WEBHOOK_URL=%s\n" "${BOT_WEBHOOK_URL:-}"
   printf "BOT_TOKEN=%s\n" "$(mask_value "${BOT_TOKEN:-}")"
@@ -842,6 +927,31 @@ health_check() {
     fi
   else
     warn "mysql client not installed or DB config incomplete"
+  fi
+
+  if command -v redis-cli >/dev/null 2>&1; then
+    local redis_host redis_port redis_ping
+    redis_host="${REDIS_ADDR%%:*}"
+    redis_port="${REDIS_ADDR##*:}"
+    if [[ -z "$redis_host" || "$redis_host" == "$redis_port" ]]; then
+      redis_host="127.0.0.1"
+      redis_port="6379"
+    fi
+
+    info "Testing Redis connection"
+    if [[ -n "${REDIS_PASS:-}" ]]; then
+      redis_ping="$(redis-cli -h "$redis_host" -p "$redis_port" -a "${REDIS_PASS}" -n "${REDIS_DB:-0}" ping 2>/dev/null || true)"
+    else
+      redis_ping="$(redis-cli -h "$redis_host" -p "$redis_port" -n "${REDIS_DB:-0}" ping 2>/dev/null || true)"
+    fi
+
+    if [[ "$redis_ping" == "PONG" ]]; then
+      success "Redis connection OK"
+    else
+      warn "Redis connection failed"
+    fi
+  else
+    warn "redis-cli not installed; skipped Redis check"
   fi
 
   rm -f /tmp/hosibot_health.txt

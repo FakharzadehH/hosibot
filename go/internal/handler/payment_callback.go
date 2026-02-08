@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"hosibot/internal/models"
 	"hosibot/internal/panel"
 	"hosibot/internal/payment"
-	"hosibot/internal/pkg/httpclient"
 	"hosibot/internal/pkg/telegram"
 	"hosibot/internal/repository"
 )
@@ -53,12 +53,16 @@ func NewPaymentCallbackHandler(
 // ── ZarinPal callback ────────────────────────────────────────────────
 
 func (h *PaymentCallbackHandler) ZarinPalCallback(c echo.Context) error {
-	authority := c.QueryParam("Authority")
-	statusParam := c.QueryParam("Status")
-
-	if authority == "" {
+	gw := payment.NewZarinPalGateway("", false)
+	callback, err := gw.ParseCallback(map[string]interface{}{
+		"Authority": c.QueryParam("Authority"),
+		"Status":    c.QueryParam("Status"),
+	})
+	if err != nil {
 		return h.renderPaymentResult(c, "خطا", "پارامترهای نامعتبر", "", 0)
 	}
+	authority := callback.Authority
+	statusParam := callback.Status
 
 	// Find payment by authority (stored in dec_not_confirmed)
 	var paymentReport models.PaymentReport
@@ -87,7 +91,7 @@ func (h *PaymentCallbackHandler) ZarinPalCallback(c echo.Context) error {
 	}
 
 	// Verify with ZarinPal
-	gw := payment.NewZarinPalGateway(merchantID, false)
+	gw = payment.NewZarinPalGateway(merchantID, false)
 	result, err := gw.VerifyPayment(c.Request().Context(), authority, price)
 	if err != nil {
 		h.logger.Error("ZarinPal verify error", zap.Error(err))
@@ -131,13 +135,17 @@ func (h *PaymentCallbackHandler) NOWPaymentsCallback(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
-	paymentStatus, _ := data["payment_status"].(string)
-	if paymentStatus != "finished" {
-		return c.JSON(http.StatusOK, map[string]string{"status": "ignored"})
+	gw := payment.NewNOWPaymentsGateway("")
+	callback, err := gw.ParseCallback(data)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid callback"})
 	}
 
-	paymentID, _ := data["payment_id"].(float64)
-	invoiceID, _ := data["invoice_id"].(string)
+	paymentStatus := strings.ToLower(strings.TrimSpace(callback.Status))
+	if paymentStatus != "finished" && paymentStatus != "confirmed" {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ignored"})
+	}
+	invoiceID := callback.OrderID
 
 	// Find payment report by invoice_id (stored in dec_not_confirmed)
 	var paymentReport models.PaymentReport
@@ -153,7 +161,7 @@ func (h *PaymentCallbackHandler) NOWPaymentsCallback(c echo.Context) error {
 	}
 
 	// Process the payment
-	refID := fmt.Sprintf("%.0f", paymentID)
+	refID := callback.RefID
 	h.processConfirmedPayment(&paymentReport, "nowpayments", refID)
 
 	// Cashback
@@ -181,25 +189,27 @@ func (h *PaymentCallbackHandler) NOWPaymentsCallback(c echo.Context) error {
 // ── Tronado callback ─────────────────────────────────────────────────
 
 func (h *PaymentCallbackHandler) TronadoCallback(c echo.Context) error {
-	var data struct {
-		PaymentID        string  `json:"PaymentID"`
-		Hash             string  `json:"Hash"`
-		IsPaid           bool    `json:"IsPaid"`
-		TronAmount       float64 `json:"TronAmount"`
-		ActualTronAmount float64 `json:"ActualTronAmount"`
-	}
+	var data map[string]interface{}
 	if err := c.Bind(&data); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
 	}
 
-	if data.PaymentID == "" {
+	apiKey, _ := h.repos.Setting.GetPaySetting("apiternado")
+	if apiKey == "" {
+		h.logger.Error("Tronado API key not configured")
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "gateway not configured"})
+	}
+
+	gw := payment.NewTronadoGateway(apiKey)
+	callback, err := gw.ParseCallback(data)
+	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "missing PaymentID"})
 	}
 
 	// Find payment report
 	var paymentReport models.PaymentReport
 	if err := h.repos.Setting.DB().
-		Where("id_order = ?", data.PaymentID).
+		Where("id_order = ?", callback.OrderID).
 		First(&paymentReport).Error; err != nil {
 		return c.JSON(http.StatusOK, map[string]string{"status": "not_found"})
 	}
@@ -208,52 +218,36 @@ func (h *PaymentCallbackHandler) TronadoCallback(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "already_processed"})
 	}
 
-	// Get Tronado API key
-	apiKey, _ := h.repos.Setting.GetPaySetting("apiternado")
-	if apiKey == "" {
-		h.logger.Error("Tronado API key not configured")
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "gateway not configured"})
-	}
-
-	// Extract order ID from hash: "TrndOrderID_{id}"
-	orderIDPart := ""
-	if parts := strings.SplitN(data.Hash, "TrndOrderID_", 2); len(parts) == 2 {
-		orderIDPart = parts[1]
-	}
-
 	// Verify with Tronado API
-	verifyBody, _ := json.Marshal(map[string]string{"id": orderIDPart})
-	client := httpclient.New().
-		WithTimeout(30*time.Second).
-		WithHeader("Content-Type", "application/json").
-		WithHeader("x-api-key", apiKey)
-	resp, err := client.Post("https://bot.tronado.cloud/Order/GetStatus", verifyBody)
+	price := parseIntSafe(paymentReport.Price)
+	result, err := gw.VerifyPayment(c.Request().Context(), callback.Authority, price)
 	if err != nil {
-		h.logger.Error("Tronado verify request failed", zap.Error(err))
+		h.logger.Error("Tronado verify error", zap.Error(err))
 		return c.JSON(http.StatusOK, map[string]string{"status": "verify_failed"})
 	}
-
-	var verifyResult struct {
-		IsPaid     bool    `json:"IsPaid"`
-		TronAmount float64 `json:"TronAmount"`
-	}
-	if err := json.Unmarshal(resp, &verifyResult); err != nil {
-		h.logger.Error("Tronado verify parse error", zap.Error(err))
-		return c.JSON(http.StatusOK, map[string]string{"status": "parse_error"})
+	if strings.ToLower(strings.TrimSpace(callback.Status)) != "paid" || !result.Verified {
+		return c.JSON(http.StatusOK, map[string]string{"status": "not_verified"})
 	}
 
-	if !verifyResult.IsPaid || !data.IsPaid || data.TronAmount != verifyResult.TronAmount {
+	// Compare reported amount with verify response when both are available.
+	callbackTron := parseFloatAny(callback.Raw["TronAmount"])
+	verifyTron := parseFloatAny(result.Raw["TronAmount"])
+	if callbackTron > 0 && verifyTron > 0 && math.Abs(callbackTron-verifyTron) > 0.0000001 {
 		return c.JSON(http.StatusOK, map[string]string{"status": "not_verified"})
 	}
 
 	// Store raw callback data
-	callbackJSON, _ := json.Marshal(data)
+	callbackJSON, _ := json.Marshal(callback.Raw)
 	_ = h.repos.Payment.UpdateByOrderID(paymentReport.IDOrder, map[string]interface{}{
 		"dec_not_confirmed": string(callbackJSON),
 	})
 
 	// Process confirmed payment
-	h.processConfirmedPayment(&paymentReport, "tronado", data.Hash)
+	refID := callback.RefID
+	if refID == "" {
+		refID = callback.Authority
+	}
+	h.processConfirmedPayment(&paymentReport, "tronado", refID)
 
 	// Cashback
 	h.applyCashback(&paymentReport, "chashbackiranpay2")
@@ -264,14 +258,15 @@ func (h *PaymentCallbackHandler) TronadoCallback(c echo.Context) error {
 	if user != nil {
 		username = user.Username
 	}
-	price := parseIntSafe(paymentReport.Price)
 	balanceLow := ""
-	if data.TronAmount < data.ActualTronAmount {
+	tronAmount := parseFloatAny(callback.Raw["TronAmount"])
+	actualTronAmount := parseFloatAny(callback.Raw["ActualTronAmount"])
+	if tronAmount > 0 && actualTronAmount > 0 && tronAmount < actualTronAmount {
 		balanceLow = "❌ کاربر کمتر از مبلغ تعیین شده واریز کرده است.\n"
 	}
 	reportText := fmt.Sprintf(
 		"💵 پرداخت جدید\n%s👤 نام کاربری کاربر: @%s\n🆔 آیدی عددی کاربر: %s\n💸 مبلغ تراکنش: %s\n🔗 <a href=\"https://tronscan.org/#/transaction/%s\">لینک پرداخت</a>\n📥 مبلغ واریز شده ترون: %.4f\n💳 روش پرداخت: ترونادو",
-		balanceLow, username, paymentReport.IDUser, formatNumber(price), data.Hash, data.TronAmount,
+		balanceLow, username, paymentReport.IDUser, formatNumber(price), refID, tronAmount,
 	)
 	h.reportToChannel(reportText, "paymentreport")
 
@@ -281,31 +276,28 @@ func (h *PaymentCallbackHandler) TronadoCallback(c echo.Context) error {
 // ── IranPay callback ─────────────────────────────────────────────────
 
 func (h *PaymentCallbackHandler) IranPayCallback(c echo.Context) error {
-	var data struct {
-		HashID    string `json:"hashid"`
-		Authority string `json:"authority"`
-		Status    int    `json:"status"`
-	}
+	var data map[string]interface{}
 	if err := c.Bind(&data); err != nil {
 		return h.renderPaymentResult(c, "خطا", "درخواست نامعتبر", "", 0)
 	}
 
-	if data.HashID == "" {
+	gw := payment.NewIranPayGateway("")
+	callback, err := gw.ParseCallback(data)
+	if err != nil || callback.OrderID == "" {
 		return h.renderPaymentResult(c, "خطا", "پارامترهای نامعتبر", "", 0)
 	}
 
 	// Find payment report
 	var paymentReport models.PaymentReport
 	if err := h.repos.Setting.DB().
-		Where("id_order = ?", data.HashID).
+		Where("id_order = ?", callback.OrderID).
 		First(&paymentReport).Error; err != nil {
-		return h.renderPaymentResult(c, "خطا", "تراکنش یافت نشد", data.HashID, 0)
+		return h.renderPaymentResult(c, "خطا", "تراکنش یافت نشد", callback.OrderID, 0)
 	}
 
 	price := parseIntSafe(paymentReport.Price)
-	invoiceID := paymentReport.IDOrder
-
-	if data.Status != 100 {
+	invoiceID := callback.OrderID
+	if parseIntSafe(callback.Status) != 100 {
 		return h.renderPaymentResult(c, "ناموفق", "پرداخت انجام نشد", invoiceID, price)
 	}
 
@@ -320,35 +312,18 @@ func (h *PaymentCallbackHandler) IranPayCallback(c echo.Context) error {
 	}
 
 	// Verify with IranPay (tetra98)
-	verifyBody, _ := json.Marshal(map[string]interface{}{
-		"ApiKey":    apiKey,
-		"authority": data.Authority,
-		"hashid":    invoiceID,
-	})
-	client := httpclient.New().
-		WithTimeout(30*time.Second).
-		WithHeader("Content-Type", "application/json").
-		WithHeader("Accept", "application/json")
-	resp, err := client.Post("https://tetra98.ir/api/verify", verifyBody)
+	gw = payment.NewIranPayGateway(apiKey)
+	result, err := gw.VerifyPayment(c.Request().Context(), invoiceID+"|"+callback.Authority, price)
 	if err != nil {
-		h.logger.Error("IranPay verify request failed", zap.Error(err))
+		h.logger.Error("IranPay verify error", zap.Error(err))
 		return h.renderPaymentResult(c, "خطا", "خطا در تأیید پرداخت", invoiceID, price)
 	}
-
-	var verifyResult struct {
-		Status int `json:"status"`
-	}
-	if err := json.Unmarshal(resp, &verifyResult); err != nil {
-		h.logger.Error("IranPay verify parse error", zap.Error(err))
-		return h.renderPaymentResult(c, "خطا", "خطا در پردازش پاسخ درگاه", invoiceID, price)
-	}
-
-	if verifyResult.Status != 100 {
+	if !result.Verified {
 		return h.renderPaymentResult(c, "ناموفق", "تأیید پرداخت ناموفق", invoiceID, price)
 	}
 
 	// Payment verified — process it
-	h.processConfirmedPayment(&paymentReport, "iranpay", data.Authority)
+	h.processConfirmedPayment(&paymentReport, "iranpay", callback.Authority)
 
 	// Cashback
 	h.applyCashback(&paymentReport, "chashbackiranpay1")
@@ -371,12 +346,16 @@ func (h *PaymentCallbackHandler) IranPayCallback(c echo.Context) error {
 // ── AqayePardakht callback ───────────────────────────────────────────
 
 func (h *PaymentCallbackHandler) AqayePardakhtCallback(c echo.Context) error {
-	invoiceID := c.FormValue("invoice_id")
-	transID := c.FormValue("transid")
-
-	if invoiceID == "" {
+	gw := payment.NewAqayePardakhtGateway("")
+	callback, err := gw.ParseCallback(map[string]interface{}{
+		"invoice_id": c.FormValue("invoice_id"),
+		"transid":    c.FormValue("transid"),
+	})
+	if err != nil || callback.OrderID == "" {
 		return h.renderPaymentResult(c, "خطا", "پارامترهای نامعتبر", "", 0)
 	}
+	invoiceID := callback.OrderID
+	transID := callback.Authority
 
 	// Find payment report
 	var paymentReport models.PaymentReport
@@ -399,34 +378,16 @@ func (h *PaymentCallbackHandler) AqayePardakhtCallback(c echo.Context) error {
 	}
 
 	// Verify with AqayePardakht
-	verifyBody, _ := json.Marshal(map[string]interface{}{
-		"pin":     pin,
-		"amount":  price,
-		"transid": transID,
-	})
-	client := httpclient.New().
-		WithTimeout(30*time.Second).
-		WithHeader("Content-Type", "application/json")
-	resp, err := client.Post("https://panel.aqayepardakht.ir/api/v2/verify", verifyBody)
+	gw = payment.NewAqayePardakhtGateway(pin)
+	result, err := gw.VerifyPayment(c.Request().Context(), transID, price)
 	if err != nil {
-		h.logger.Error("AqayePardakht verify request failed", zap.Error(err))
+		h.logger.Error("AqayePardakht verify error", zap.Error(err))
 		return h.renderPaymentResult(c, "خطا", "خطا در تأیید پرداخت", invoiceID, price)
 	}
-
-	var verifyResult struct {
-		Code string `json:"code"`
-	}
-	if err := json.Unmarshal(resp, &verifyResult); err != nil {
-		h.logger.Error("AqayePardakht verify parse error", zap.Error(err))
-		return h.renderPaymentResult(c, "خطا", "خطا در پردازش پاسخ درگاه", invoiceID, price)
-	}
-
-	switch verifyResult.Code {
-	case "1":
-		// Success — process payment
-	case "2":
-		return h.renderPaymentResult(c, "پرداخت قبلی", "تراکنش قبلا وریفای و پرداخت شده است", invoiceID, price)
-	default:
+	if !result.Verified {
+		if result.Message == "already paid" {
+			return h.renderPaymentResult(c, "پرداخت قبلی", "تراکنش قبلا وریفای و پرداخت شده است", invoiceID, price)
+		}
 		return h.renderPaymentResult(c, "پرداخت انجام نشد", "تأیید پرداخت ناموفق", invoiceID, price)
 	}
 
@@ -881,6 +842,25 @@ func parseIntSafe(s string) int {
 	n := 0
 	fmt.Sscanf(s, "%d", &n)
 	return n
+}
+
+func parseFloatAny(v interface{}) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case string:
+		f := 0.0
+		fmt.Sscanf(strings.TrimSpace(t), "%f", &f)
+		return f
+	default:
+		return 0
+	}
 }
 
 func formatNumber(n int) string {

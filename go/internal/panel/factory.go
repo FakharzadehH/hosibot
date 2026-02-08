@@ -32,23 +32,22 @@ func PanelFactory(p *models.Panel) (PanelClient, error) {
 			}
 		}
 		return client, nil
-	// Other panel types (not yet implemented):
-	// case "x-ui_single":
-	//     return NewXUISingleClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
-	// case "hiddify":
-	//     return NewHiddifyClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
-	// case "marzneshin":
-	//     return NewMarzneshinClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
-	// case "s_ui":
-	//     return NewSUIClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
-	// case "WGDashboard":
-	//     return NewWGDashboardClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
-	// case "mikrotik":
-	//     return NewMikrotikClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
-	// case "ibsng":
-	//     return NewIBSngClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
-	// case "alireza_single":
-	//     return NewAlirezaSingleClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
+	case "x-ui_single", "xui":
+		return NewXUIClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
+	case "hiddify":
+		return NewHiddifyClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
+	case "marzneshin":
+		return NewMarzneshinClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
+	case "s_ui":
+		return NewSUIClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
+	case "WGDashboard", "wgdashboard":
+		return NewWGDashboardClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
+	case "mikrotik":
+		return NewMikrotikClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
+	case "ibsng":
+		return NewIBSngClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
+	case "alireza_single":
+		return NewAlirezaSingleClient(p.URLPanel, p.UsernamePanel, p.PasswordPanel), nil
 	default:
 		return nil, fmt.Errorf("unsupported panel type: %s", p.Type)
 	}

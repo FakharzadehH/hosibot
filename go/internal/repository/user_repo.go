@@ -94,9 +94,9 @@ func (r *UserRepository) Block(chatID, description, typeBlock string) error {
 		"description_blocking": description,
 	}
 	if typeBlock == "block" {
-		updates["User_Status"] = "blocked"
+		updates["User_Status"] = "block"
 	} else {
-		updates["User_Status"] = "active"
+		updates["User_Status"] = "Active"
 		updates["description_blocking"] = ""
 	}
 	return r.db.Model(&models.User{}).Where("id = ?", chatID).Updates(updates).Error
@@ -139,6 +139,26 @@ func (r *UserRepository) TransferAccount(oldID, newID string) error {
 		// Update affiliate references
 		if err := tx.Model(&models.User{}).Where("affiliates = ?", oldID).Update("affiliates", newID).Error; err != nil {
 			return fmt.Errorf("failed to update affiliates: %w", err)
+		}
+
+		// Update related legacy tables when present.
+		type tableUpdate struct {
+			table  string
+			column string
+		}
+		updates := []tableUpdate{
+			{table: "support_message", column: "iduser"},
+			{table: "service_other", column: "id_user"},
+			{table: "Giftcodeconsumed", column: "id_user"},
+			{table: "botsaz", column: "id_user"},
+		}
+		for _, item := range updates {
+			if !tx.Migrator().HasTable(item.table) {
+				continue
+			}
+			if err := tx.Table(item.table).Where(item.column+" = ?", oldID).Update(item.column, newID).Error; err != nil {
+				return fmt.Errorf("failed to update table %s: %w", item.table, err)
+			}
 		}
 		return nil
 	})

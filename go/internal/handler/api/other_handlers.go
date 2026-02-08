@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
@@ -59,7 +60,7 @@ func (h *PanelHandler) listPanels(c echo.Context, body map[string]interface{}) e
 		return errorResponse(c, "Failed to retrieve panels")
 	}
 
-	return successResponse(c, "Successful", paginatedResponse(panels, total, page, limit))
+	return successResponse(c, "Successful", paginatedNamedResponse("panels", panels, total, page, limit))
 }
 
 func (h *PanelHandler) getPanel(c echo.Context, body map[string]interface{}) error {
@@ -73,7 +74,11 @@ func (h *PanelHandler) getPanel(c echo.Context, body map[string]interface{}) err
 		return errorResponse(c, "Panel not found")
 	}
 
-	return successResponse(c, "Successful", panel)
+	categories, _, _ := h.repos.Setting.FindAllCategories(0, 1, "")
+	return successResponse(c, "Successful", map[string]interface{}{
+		"panel":    panel,
+		"category": categories,
+	})
 }
 
 func (h *PanelHandler) addPanel(c echo.Context, body map[string]interface{}) error {
@@ -81,8 +86,27 @@ func (h *PanelHandler) addPanel(c echo.Context, body map[string]interface{}) err
 	if name == "" {
 		return errorResponse(c, "name is required")
 	}
+	if h.repos.ServicePanel == nil {
+		return errorResponse(c, "Service panel repository unavailable")
+	}
 
-	codePanel := utils.RandomCode(8)
+	exists, err := h.repos.ServicePanel.CountByName(name)
+	if err == nil && exists > 0 {
+		return errorResponse(c, "panel name exits")
+	}
+
+	location := getStringField(body, "location")
+	if location == "" {
+		return errorResponse(c, "location is required")
+	}
+	locationName := location
+	if location != "/all" {
+		basePanel, err := h.repos.Panel.FindByCode(location)
+		if err != nil || basePanel == nil {
+			return errorResponse(c, "location not found")
+		}
+		locationName = basePanel.NamePanel
+	}
 
 	inboundsJSON := ""
 	if v, ok := body["inbounds"]; ok && v != nil {
@@ -94,27 +118,46 @@ func (h *PanelHandler) addPanel(c echo.Context, body map[string]interface{}) err
 		b, _ := json.Marshal(v)
 		proxiesJSON = string(b)
 	}
-
-	panel := &models.Panel{
-		CodePanel:     codePanel,
-		NamePanel:     name,
-		Status:        "active",
-		URLPanel:      getStringField(body, "url"),
-		UsernamePanel: getStringField(body, "username"),
-		PasswordPanel: getStringField(body, "password"),
-		SecretCode:    getStringField(body, "secret_code"),
-		Agent:         getStringField(body, "agent"),
-		Type:          getStringField(body, "type"),
-		Inbounds:      inboundsJSON,
-		Proxies:       proxiesJSON,
+	hidePanelJSON := "{}"
+	if v, ok := body["hide_panel"]; ok && v != nil {
+		b, _ := json.Marshal(v)
+		hidePanelJSON = string(b)
 	}
 
-	if err := h.repos.Panel.Create(panel); err != nil {
-		h.logger.Error("Failed to create panel", zap.Error(err))
-		return errorResponse(c, "Failed to create panel")
+	agent := getStringField(body, "agent")
+	if strings.TrimSpace(agent) == "" {
+		agent = "f"
+	}
+	note := getStringField(body, "note")
+	dataLimitReset := getStringField(body, "data_limit_reset")
+	if strings.TrimSpace(dataLimitReset) == "" {
+		dataLimitReset = "no_reset"
 	}
 
-	return successResponse(c, "Panel created successfully", panel)
+	panel := &models.ServicePanel{
+		CodePanel:        utils.RandomCode(6),
+		NamePanel:        name,
+		PricePanel:       fmt.Sprintf("%d", getIntField(body, "price", 0)),
+		VolumeConstraint: fmt.Sprintf("%d", getIntField(body, "data_limit", 0)),
+		ServiceTime:      fmt.Sprintf("%d", getIntField(body, "time", 0)),
+		Location:         locationName,
+		Agent:            agent,
+		Note:             note,
+		DataLimitReset:   dataLimitReset,
+		Inbounds:         inboundsJSON,
+		Proxies:          proxiesJSON,
+		Category:         getStringField(body, "category"),
+		OneBuyStatus:     fmt.Sprintf("%d", getIntField(body, "one_buy_status", 0)),
+		HidePanel:        hidePanelJSON,
+		Status:           "active",
+	}
+
+	if err := h.repos.ServicePanel.Create(panel); err != nil {
+		h.logger.Error("Failed to create service panel", zap.Error(err))
+		return errorResponse(c, "An error occurred while editing panel")
+	}
+
+	return successResponse(c, "Successful", nil)
 }
 
 func (h *PanelHandler) editPanel(c echo.Context, body map[string]interface{}) error {
@@ -122,28 +165,45 @@ func (h *PanelHandler) editPanel(c echo.Context, body map[string]interface{}) er
 	if id == 0 {
 		return errorResponse(c, "id is required")
 	}
+	if h.repos.ServicePanel == nil {
+		return errorResponse(c, "Service panel repository unavailable")
+	}
 
-	updates := make(map[string]interface{})
+	current, err := h.repos.ServicePanel.FindByID(id)
+	if err != nil || current == nil {
+		return errorResponse(c, "panel not found")
+	}
+
+	updates := map[string]interface{}{}
 
 	fieldMap := map[string]string{
-		"name":        "name_panel",
-		"sublink":     "sublink",
-		"config":      "config",
-		"status":      "status",
-		"location":    "Location",
-		"agent":       "agent",
-		"note":        "note",
-		"type":        "type",
-		"url":         "url_panel",
-		"username":    "username_panel",
-		"password":    "password_panel",
-		"secret_code": "secret_code",
+		"name":             "name_panel",
+		"sublink":          "sublink",
+		"config":           "config",
+		"status":           "status",
+		"agent":            "agent",
+		"note":             "note",
+		"data_limit_reset": "data_limit_reset",
+		"category":         "category",
 	}
 
 	for jsonKey, dbCol := range fieldMap {
 		if v := getStringField(body, jsonKey); v != "" {
 			updates[dbCol] = v
 		}
+	}
+	if v, ok := body["one_buy_status"]; ok {
+		updates["one_buy_status"] = fmt.Sprintf("%v", v)
+	}
+
+	if v := getStringField(body, "location"); v != "" {
+		locationName := v
+		if v != "/all" {
+			if basePanel, err := h.repos.Panel.FindByCode(v); err == nil && basePanel != nil {
+				locationName = basePanel.NamePanel
+			}
+		}
+		updates["Location"] = locationName
 	}
 
 	if v, ok := body["inbounds"]; ok && v != nil {
@@ -156,17 +216,27 @@ func (h *PanelHandler) editPanel(c echo.Context, body map[string]interface{}) er
 	}
 	if v, ok := body["hide_panel"]; ok && v != nil {
 		b, _ := json.Marshal(v)
-		updates["hide_user"] = string(b)
+		updates["hide_panel"] = string(b)
 	}
 
 	if len(updates) == 0 {
 		return errorResponse(c, "No fields to update")
 	}
 
-	if err := h.repos.Panel.Update(id, updates); err != nil {
+	if newName, ok := updates["name_panel"].(string); ok && strings.TrimSpace(newName) != "" && newName != current.NamePanel {
+		exists, err := h.repos.ServicePanel.CountByName(newName)
+		if err == nil && exists > 0 {
+			return errorResponse(c, "panel name exits")
+		}
+		_ = h.repos.Setting.DB().Model(&models.Invoice{}).
+			Where("Service_location = ?", current.NamePanel).
+			Update("Service_location", newName).Error
+	}
+
+	if err := h.repos.ServicePanel.Update(id, updates); err != nil {
 		return errorResponse(c, "Failed to update panel")
 	}
-	return successResponse(c, "Panel updated successfully", nil)
+	return successResponse(c, "panel updated successfully", nil)
 }
 
 func (h *PanelHandler) deletePanel(c echo.Context, body map[string]interface{}) error {
@@ -174,11 +244,16 @@ func (h *PanelHandler) deletePanel(c echo.Context, body map[string]interface{}) 
 	if id == 0 {
 		return errorResponse(c, "id is required")
 	}
-
-	if err := h.repos.Panel.Delete(id); err != nil {
+	if h.repos.ServicePanel == nil {
+		return errorResponse(c, "Service panel repository unavailable")
+	}
+	if _, err := h.repos.ServicePanel.FindByID(id); err != nil {
+		return errorResponse(c, "panel not found")
+	}
+	if err := h.repos.ServicePanel.Delete(id); err != nil {
 		return errorResponse(c, "Failed to delete panel")
 	}
-	return successResponse(c, "Panel deleted successfully", nil)
+	return successResponse(c, "panel delete successfully", nil)
 }
 
 func (h *PanelHandler) setInbounds(c echo.Context, body map[string]interface{}) error {
@@ -188,11 +263,41 @@ func (h *PanelHandler) setInbounds(c echo.Context, body map[string]interface{}) 
 	if id == 0 {
 		return errorResponse(c, "id is required")
 	}
+	if strings.TrimSpace(input) == "" {
+		return errorResponse(c, "input is required")
+	}
+	if h.repos.ServicePanel == nil {
+		return errorResponse(c, "Service panel repository unavailable")
+	}
 
-	if err := h.repos.Panel.Update(id, map[string]interface{}{"inbounds": input}); err != nil {
+	panelRow, err := h.repos.ServicePanel.FindByID(id)
+	if err != nil || panelRow == nil {
+		return errorResponse(c, "panel not found")
+	}
+	panelModel, err := h.repos.Panel.FindByName(panelRow.Location)
+	if err != nil || panelModel == nil {
+		return errorResponse(c, "panel not found")
+	}
+
+	updates := map[string]interface{}{}
+	switch strings.ToLower(strings.TrimSpace(panelModel.Type)) {
+	case "ibsng", "mikrotik":
+		updates["inbounds"] = input
+	case "marzban", "pasarguard":
+		inboundsJSON, proxiesJSON, err := extractPanelTemplate(panelModel, input)
+		if err != nil {
+			return errorResponse(c, err.Error())
+		}
+		updates["inbounds"] = inboundsJSON
+		updates["proxies"] = proxiesJSON
+	default:
+		return errorResponse(c, "panel_not_support_options")
+	}
+
+	if err := h.repos.ServicePanel.Update(id, updates); err != nil {
 		return errorResponse(c, "Failed to set inbounds")
 	}
-	return successResponse(c, "Inbounds set successfully", nil)
+	return successResponse(c, "successfully", nil)
 }
 
 // DiscountHandler handles discount API actions.
@@ -246,7 +351,7 @@ func (h *DiscountHandler) listDiscounts(c echo.Context, body map[string]interfac
 		return errorResponse(c, "Failed to retrieve discounts")
 	}
 
-	return successResponse(c, "Successful", paginatedResponse(discounts, total, page, limit))
+	return successResponse(c, "Successful", paginatedNamedResponse("discount", discounts, total, page, limit))
 }
 
 func (h *DiscountHandler) getDiscount(c echo.Context, body map[string]interface{}) error {
@@ -308,7 +413,7 @@ func (h *DiscountHandler) listDiscountSells(c echo.Context, body map[string]inte
 		return errorResponse(c, "Failed to retrieve discount sells")
 	}
 
-	return successResponse(c, "Successful", paginatedResponse(sells, total, page, limit))
+	return successResponse(c, "Successful", paginatedNamedResponse("discountsell", sells, total, page, limit))
 }
 
 func (h *DiscountHandler) getDiscountSell(c echo.Context, body map[string]interface{}) error {
@@ -409,7 +514,7 @@ func (h *CategoryHandler) listCategories(c echo.Context, body map[string]interfa
 		return errorResponse(c, "Failed to retrieve categories")
 	}
 
-	return successResponse(c, "Successful", paginatedResponse(categories, total, page, limit))
+	return successResponse(c, "Successful", paginatedNamedResponse("category", categories, total, page, limit))
 }
 
 func (h *CategoryHandler) getCategory(c echo.Context, body map[string]interface{}) error {
@@ -506,18 +611,21 @@ func (h *SettingsHandler) Handle(c echo.Context) error {
 
 func (h *SettingsHandler) keyboardSet(c echo.Context, body map[string]interface{}) error {
 	if reset, ok := body["keyboard_reset"]; ok && reset == true {
-		if err := h.repos.Setting.UpdateSetting("keyboardmain", ""); err != nil {
+		defaultKeyboard := `{"keyboard":[[{"text":"text_sell"},{"text":"text_extend"}],[{"text":"text_usertest"},{"text":"text_wheel_luck"}],[{"text":"text_Purchased_services"},{"text":"accountwallet"}],[{"text":"text_affiliates"},{"text":"text_Tariff_list"}],[{"text":"text_support"},{"text":"text_help"}]]}`
+		if err := h.repos.Setting.UpdateSetting("keyboardmain", defaultKeyboard); err != nil {
 			return errorResponse(c, "Failed to reset keyboard")
 		}
-		return successResponse(c, "Keyboard reset successfully", nil)
+		return successResponse(c, "Successful", nil)
 	}
 
 	if keyboard, ok := body["keyboard"]; ok {
-		keyboardJSON, _ := json.Marshal(keyboard)
+		keyboardJSON, _ := json.Marshal(map[string]interface{}{
+			"keyboard": keyboard,
+		})
 		if err := h.repos.Setting.UpdateSetting("keyboardmain", string(keyboardJSON)); err != nil {
 			return errorResponse(c, "Failed to set keyboard")
 		}
-		return successResponse(c, "Keyboard set successfully", nil)
+		return successResponse(c, "Successful", nil)
 	}
 
 	return errorResponse(c, "keyboard or keyboard_reset is required")
@@ -532,7 +640,14 @@ func (h *SettingsHandler) settingInfo(c echo.Context, _ map[string]interface{}) 
 	shopSettings, _ := h.repos.Setting.GetAllShopSettings()
 	paySettings, _ := h.repos.Setting.GetAllPaySettings()
 
+	shopKV := map[string]string{}
+	for _, item := range shopSettings {
+		shopKV[item.NameValue] = item.Value
+	}
 	result := map[string]interface{}{
+		"setting_shop":    shopKV,
+		"setting_General": setting,
+		// Backward-compatible aliases
 		"setting":      setting,
 		"shopSettings": shopSettings,
 		"paySettings":  paySettings,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"hosibot/internal/pkg/httpclient"
@@ -112,6 +113,43 @@ func (m *MarzbanClient) GetUser(ctx context.Context, username string) (*PanelUse
 	}
 
 	return user, nil
+}
+
+// GetUserTemplate returns inbounds/proxy template extracted from an existing panel user.
+// Used by admin API set_inbounds parity behavior.
+func (m *MarzbanClient) GetUserTemplate(ctx context.Context, username string) (map[string][]string, map[string]string, error) {
+	if err := m.ensureAuth(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	resp, err := m.client.Get(m.baseURL + "/api/user/" + username)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marzban get user failed: %w", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(resp, &raw); err != nil {
+		return nil, nil, fmt.Errorf("marzban parse error: %w", err)
+	}
+
+	if detail := strings.TrimSpace(getString(raw, "detail")); strings.EqualFold(detail, "User not found") {
+		return nil, nil, fmt.Errorf("user not found")
+	}
+
+	inbounds := parseMarzbanInbounds(raw)
+	proxies := parseMarzbanProxies(raw)
+	if len(inbounds) == 0 && len(proxies) == 0 {
+		return nil, nil, fmt.Errorf("user template not found")
+	}
+
+	// Ensure inbounds contains protocols present in proxies.
+	for proto := range proxies {
+		if _, ok := inbounds[proto]; !ok {
+			inbounds[proto] = []string{}
+		}
+	}
+
+	return inbounds, proxies, nil
 }
 
 func (m *MarzbanClient) CreateUser(ctx context.Context, req CreateUserRequest) (*PanelUser, error) {
@@ -376,4 +414,70 @@ func getString(m map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+func parseMarzbanInbounds(raw map[string]interface{}) map[string][]string {
+	out := make(map[string][]string)
+	val, ok := raw["inbounds"]
+	if !ok {
+		return out
+	}
+
+	inboundsMap, ok := val.(map[string]interface{})
+	if !ok {
+		return out
+	}
+
+	for proto, tagsRaw := range inboundsMap {
+		proto = strings.TrimSpace(proto)
+		if proto == "" {
+			continue
+		}
+		tags := make([]string, 0)
+		switch typed := tagsRaw.(type) {
+		case []interface{}:
+			for _, item := range typed {
+				if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+					tags = append(tags, strings.TrimSpace(s))
+				}
+			}
+		case []string:
+			for _, s := range typed {
+				if strings.TrimSpace(s) != "" {
+					tags = append(tags, strings.TrimSpace(s))
+				}
+			}
+		}
+		out[proto] = tags
+	}
+	return out
+}
+
+func parseMarzbanProxies(raw map[string]interface{}) map[string]string {
+	out := make(map[string]string)
+
+	var source map[string]interface{}
+	if v, ok := raw["proxy_settings"].(map[string]interface{}); ok {
+		source = v
+	} else if v, ok := raw["proxies"].(map[string]interface{}); ok {
+		source = v
+	}
+	if len(source) == 0 {
+		return out
+	}
+
+	for proto, settings := range source {
+		proto = strings.TrimSpace(proto)
+		if proto == "" {
+			continue
+		}
+		flow := ""
+		if m, ok := settings.(map[string]interface{}); ok {
+			if v, ok := m["flow"].(string); ok {
+				flow = strings.TrimSpace(v)
+			}
+		}
+		out[proto] = flow
+	}
+	return out
 }

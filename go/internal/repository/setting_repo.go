@@ -310,3 +310,43 @@ func (r *SettingRepository) FindAllServiceOther(limit int) ([]models.ServiceOthe
 	err := db.Find(&services).Error
 	return services, err
 }
+
+// --- BotSaz ---
+
+func (r *SettingRepository) CountBotSaz() (int64, error) {
+	var count int64
+	err := r.db.Model(&models.BotSaz{}).Count(&count).Error
+	return count, err
+}
+
+func (r *SettingRepository) CountBotSazByUserID(userID string) (int64, error) {
+	var count int64
+	err := r.db.Model(&models.BotSaz{}).Where("id_user = ?", userID).Count(&count).Error
+	return count, err
+}
+
+func (r *SettingRepository) CountBotSazByToken(token string) (int64, error) {
+	var count int64
+	err := r.db.Model(&models.BotSaz{}).Where("bot_token = ?", token).Count(&count).Error
+	return count, err
+}
+
+func (r *SettingRepository) FindBotSazByUserID(userID string) (*models.BotSaz, error) {
+	var bot models.BotSaz
+	if err := r.db.Where("id_user = ?", userID).First(&bot).Error; err != nil {
+		return nil, err
+	}
+	return &bot, nil
+}
+
+func (r *SettingRepository) CreateBotSaz(bot *models.BotSaz) error {
+	return r.db.Create(bot).Error
+}
+
+func (r *SettingRepository) UpdateBotSazByUserID(userID string, updates map[string]interface{}) error {
+	return r.db.Model(&models.BotSaz{}).Where("id_user = ?", userID).Updates(updates).Error
+}
+
+func (r *SettingRepository) DeleteBotSazByUserID(userID string) error {
+	return r.db.Where("id_user = ?", userID).Delete(&models.BotSaz{}).Error
+}

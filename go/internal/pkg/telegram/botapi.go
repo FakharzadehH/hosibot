@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -108,7 +109,7 @@ func (b *BotAPI) AnswerCallbackQuery(callbackQueryID, text string, showAlert boo
 // SendDocument sends a document.
 func (b *BotAPI) SendDocument(chatID string, fileData []byte, filename, caption string) (string, error) {
 	resp, err := b.client.R().
-		SetFileReader("document", filename, io.NopCloser(strings.NewReader(string(fileData)))).
+		SetFileReader("document", filename, bytes.NewReader(fileData)).
 		SetFormData(map[string]string{
 			"chat_id":    chatID,
 			"caption":    caption,
@@ -139,13 +140,73 @@ func (b *BotAPI) SendPhotoBase64(chatID string, data string, caption string) (st
 		return "", fmt.Errorf("failed to decode base64: %w", err)
 	}
 	resp, err := b.client.R().
-		SetFileReader("photo", "photo.jpg", io.NopCloser(strings.NewReader(string(decoded)))).
+		SetFileReader("photo", "photo.jpg", bytes.NewReader(decoded)).
 		SetFormData(map[string]string{
 			"chat_id":    chatID,
 			"caption":    caption,
 			"parse_mode": "HTML",
 		}).
 		Post("/sendPhoto")
+	if err != nil {
+		return "", err
+	}
+	return resp.String(), nil
+}
+
+// SendVideoBase64 sends a video from base64 encoded data.
+func (b *BotAPI) SendVideoBase64(chatID string, data string, caption string) (string, error) {
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64: %w", err)
+	}
+	resp, err := b.client.R().
+		SetFileReader("video", "video.mp4", bytes.NewReader(decoded)).
+		SetFormData(map[string]string{
+			"chat_id":    chatID,
+			"caption":    caption,
+			"parse_mode": "HTML",
+		}).
+		Post("/sendVideo")
+	if err != nil {
+		return "", err
+	}
+	return resp.String(), nil
+}
+
+// SendDocumentBase64 sends a document from base64 encoded data.
+func (b *BotAPI) SendDocumentBase64(chatID string, data string, filename string, caption string) (string, error) {
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64: %w", err)
+	}
+	resp, err := b.client.R().
+		SetFileReader("document", filename, bytes.NewReader(decoded)).
+		SetFormData(map[string]string{
+			"chat_id":    chatID,
+			"caption":    caption,
+			"parse_mode": "HTML",
+		}).
+		Post("/sendDocument")
+	if err != nil {
+		return "", err
+	}
+	return resp.String(), nil
+}
+
+// SendAudioBase64 sends an audio file from base64 encoded data.
+func (b *BotAPI) SendAudioBase64(chatID string, data string, filename string, caption string) (string, error) {
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode base64: %w", err)
+	}
+	resp, err := b.client.R().
+		SetFileReader("audio", filename, bytes.NewReader(decoded)).
+		SetFormData(map[string]string{
+			"chat_id":    chatID,
+			"caption":    caption,
+			"parse_mode": "HTML",
+		}).
+		Post("/sendAudio")
 	if err != nil {
 		return "", err
 	}

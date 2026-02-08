@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
@@ -63,7 +64,7 @@ func (h *InvoiceHandler) listInvoices(c echo.Context, body map[string]interface{
 		return errorResponse(c, "Failed to retrieve invoices")
 	}
 
-	return successResponse(c, "Successful", paginatedResponse(invoices, total, page, limit))
+	return successResponse(c, "Successful", paginatedNamedResponse("invoices", invoices, total, page, limit))
 }
 
 func (h *InvoiceHandler) listServices(c echo.Context, body map[string]interface{}) error {
@@ -77,7 +78,7 @@ func (h *InvoiceHandler) listServices(c echo.Context, body map[string]interface{
 		return errorResponse(c, "Failed to retrieve services")
 	}
 
-	return successResponse(c, "Successful", paginatedResponse(services, total, page, limit))
+	return successResponse(c, "Successful", paginatedNamedResponse("services", services, total, page, limit))
 }
 
 func (h *InvoiceHandler) getInvoice(c echo.Context, body map[string]interface{}) error {
@@ -92,7 +93,10 @@ func (h *InvoiceHandler) getInvoice(c echo.Context, body map[string]interface{})
 	}
 
 	// Get related panel info
-	panel, _ := h.repos.Panel.FindByCode(invoice.ServiceLocation)
+	panel, _ := h.repos.Panel.FindByName(invoice.ServiceLocation)
+	if panel == nil {
+		panel, _ = h.repos.Panel.FindByCode(invoice.ServiceLocation)
+	}
 
 	result := map[string]interface{}{
 		"invoice": invoice,
@@ -117,12 +121,7 @@ func (h *InvoiceHandler) removeService(c echo.Context, body map[string]interface
 
 	switch removeType {
 	case "one":
-		// Just mark as removed (deactivate service)
-		if err := h.repos.Invoice.Update(invoiceID, map[string]interface{}{"Status": "removed"}); err != nil {
-			return errorResponse(c, "Failed to remove service")
-		}
-	case "tow":
-		// Remove from panel and mark as removed
+		// Remove from panel and mark as removed by admin.
 		panelModel, _ := h.repos.Panel.FindByName(invoice.ServiceLocation)
 		if panelModel != nil {
 			if pc, err := panel.PanelFactory(panelModel); err == nil {
@@ -132,23 +131,41 @@ func (h *InvoiceHandler) removeService(c echo.Context, body map[string]interface
 				}
 			}
 		}
-		if err := h.repos.Invoice.Update(invoiceID, map[string]interface{}{"Status": "removed"}); err != nil {
+		if err := h.repos.Invoice.Update(invoiceID, map[string]interface{}{"Status": "removebyadmin"}); err != nil {
 			return errorResponse(c, "Failed to remove service")
 		}
-	case "three":
-		// Remove and refund
+	case "tow":
+		// Refund + remove from panel + mark as removed by admin.
+		if _, ok := body["amount"]; !ok {
+			return errorResponse(c, "amount is required")
+		}
 		amount := getIntField(body, "amount", 0)
 		if amount > 0 {
 			_ = h.repos.User.UpdateBalance(invoice.IDUser, amount)
 		}
-		if err := h.repos.Invoice.Update(invoiceID, map[string]interface{}{"Status": "removed"}); err != nil {
+
+		panelModel, _ := h.repos.Panel.FindByName(invoice.ServiceLocation)
+		if panelModel != nil {
+			if pc, err := panel.PanelFactory(panelModel); err == nil {
+				ctx := context.Background()
+				if err := pc.Authenticate(ctx); err == nil {
+					_ = pc.DeleteUser(ctx, invoice.Username)
+				}
+			}
+		}
+		if err := h.repos.Invoice.Update(invoiceID, map[string]interface{}{"Status": "removebyadmin"}); err != nil {
+			return errorResponse(c, "Failed to remove service")
+		}
+	case "three":
+		// Hard delete invoice row.
+		if err := h.repos.Invoice.Delete(invoiceID); err != nil {
 			return errorResponse(c, "Failed to remove service")
 		}
 	default:
 		return errorResponse(c, "Invalid remove type")
 	}
 
-	return successResponse(c, "Service removed successfully", nil)
+	return successResponse(c, "Service removed successfully", invoice)
 }
 
 func (h *InvoiceHandler) addInvoice(c echo.Context, body map[string]interface{}) error {
@@ -161,6 +178,11 @@ func (h *InvoiceHandler) addInvoice(c echo.Context, body map[string]interface{})
 
 	if chatID == "" || codeProduct == "" || locationCode == "" {
 		return errorResponse(c, "chat_id, code_product, and location_code are required")
+	}
+
+	panelModel, err := h.repos.Panel.FindByCode(locationCode)
+	if err != nil || panelModel == nil {
+		return errorResponse(c, "panel code not found")
 	}
 
 	// Get product details
@@ -188,7 +210,7 @@ func (h *InvoiceHandler) addInvoice(c echo.Context, body map[string]interface{})
 		IDInvoice:       invoiceID,
 		IDUser:          chatID,
 		Username:        username,
-		ServiceLocation: locationCode,
+		ServiceLocation: panelModel.NamePanel,
 		TimeSell:        utils.NowUnix(),
 		NameProduct:     product.NameProduct,
 		PriceProduct:    product.PriceProduct,
@@ -204,7 +226,6 @@ func (h *InvoiceHandler) addInvoice(c echo.Context, body map[string]interface{})
 	}
 
 	// Create user on the VPN panel
-	panelModel, _ := h.repos.Panel.FindByCode(locationCode)
 	if panelModel != nil {
 		if pc, err := panel.PanelFactory(panelModel); err == nil {
 			ctx := context.Background()
@@ -251,10 +272,10 @@ func (h *InvoiceHandler) changeStatusConfig(c echo.Context, body map[string]inte
 		return errorResponse(c, "Invoice not found")
 	}
 
-	// Toggle status
-	newStatus := "active"
-	if invoice.Status == "active" {
-		newStatus = "disabled"
+	// Toggle status using PHP-compatible values.
+	newStatus := "disablebyadmin"
+	if invoice.Status == "disablebyadmin" {
+		newStatus = "active"
 	}
 
 	if err := h.repos.Invoice.Update(invoiceID, map[string]interface{}{"Status": newStatus}); err != nil {
@@ -263,11 +284,14 @@ func (h *InvoiceHandler) changeStatusConfig(c echo.Context, body map[string]inte
 
 	// Enable/disable user on VPN panel
 	panelModel, _ := h.repos.Panel.FindByName(invoice.ServiceLocation)
+	if panelModel == nil {
+		panelModel, _ = h.repos.Panel.FindByCode(invoice.ServiceLocation)
+	}
 	if panelModel != nil {
 		if pc, err := panel.PanelFactory(panelModel); err == nil {
 			ctx := context.Background()
 			if err := pc.Authenticate(ctx); err == nil {
-				if newStatus == "disabled" {
+				if newStatus == "disablebyadmin" {
 					_ = pc.DisableUser(ctx, invoice.Username)
 				} else {
 					_ = pc.EnableUser(ctx, invoice.Username)
@@ -276,7 +300,7 @@ func (h *InvoiceHandler) changeStatusConfig(c echo.Context, body map[string]inte
 		}
 	}
 
-	return successResponse(c, "Status changed successfully", map[string]string{"new_status": newStatus})
+	return successResponse(c, "Successful", nil)
 }
 
 func (h *InvoiceHandler) extendServiceAdmin(c echo.Context, body map[string]interface{}) error {
@@ -320,19 +344,26 @@ func (h *InvoiceHandler) extendServiceAdmin(c echo.Context, body map[string]inte
 		}
 	}
 
-	updates := map[string]interface{}{}
-	if timeService > 0 {
-		updates["Service_time"] = fmt.Sprintf("%d", timeService)
+	// Match PHP behavior: log extend action and force invoice status active.
+	serviceOther := &models.ServiceOther{
+		IDUser:   invoice.IDUser,
+		Username: invoice.Username,
+		Value:    fmt.Sprintf("%d_%d", volumeService, timeService),
+		Type:     "extend_user_by_admin",
+		Time:     time.Now().Format("2006/01/02 15:04:05"),
+		Price:    "0",
+		Status:   "active",
 	}
-	if volumeService > 0 {
-		updates["Volume"] = fmt.Sprintf("%d", volumeService)
+	output, _ := json.Marshal(map[string]interface{}{
+		"time_service":   timeService,
+		"volume_service": volumeService,
+	})
+	serviceOther.Output = string(output)
+	_ = h.repos.Setting.DB().Create(serviceOther).Error
+
+	if err := h.repos.Invoice.Update(invoiceID, map[string]interface{}{"Status": "active"}); err != nil {
+		return errorResponse(c, "Failed to extend service")
 	}
 
-	if len(updates) > 0 {
-		if err := h.repos.Invoice.Update(invoiceID, updates); err != nil {
-			return errorResponse(c, "Failed to extend service")
-		}
-	}
-
-	return successResponse(c, "Service extended successfully", nil)
+	return successResponse(c, "Successful", nil)
 }
