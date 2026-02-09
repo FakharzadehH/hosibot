@@ -101,16 +101,20 @@ func Setup(
 	e.POST("/api/miniapp", miniAppHandler.Handle)
 
 	// Telegram webhook (protected by IP check + deduplication)
-	botWebhookGroup := e.Group("/bot")
-	botWebhookGroup.Use(middleware.TelegramIPCheck())
-	botWebhookGroup.Use(middleware.TelegramUpdateDedup(updateDeduper))
-	botWebhookGroup.POST("/webhook", echo.WrapHandler(webhookHandler))
+	if webhookHandler != nil {
+		botWebhookGroup := e.Group("/bot")
+		botWebhookGroup.Use(middleware.TelegramIPCheck())
+		botWebhookGroup.Use(middleware.TelegramUpdateDedup(updateDeduper))
+		botWebhookGroup.POST("/webhook", echo.WrapHandler(webhookHandler))
 
-	// Legacy webhook route for backward compatibility.
-	webhookGroup := e.Group("/webhook")
-	webhookGroup.Use(middleware.TelegramIPCheck())
-	webhookGroup.Use(middleware.TelegramUpdateDedup(updateDeduper))
-	webhookGroup.POST("/:token", echo.WrapHandler(webhookHandler))
+		// Legacy webhook route for backward compatibility.
+		webhookGroup := e.Group("/webhook")
+		webhookGroup.Use(middleware.TelegramIPCheck())
+		webhookGroup.Use(middleware.TelegramUpdateDedup(updateDeduper))
+		webhookGroup.POST("/:token", echo.WrapHandler(webhookHandler))
+	} else {
+		logger.Info("Telegram webhook routes disabled (bot update mode is polling)")
+	}
 
 	// Payment callback routes
 	paymentGroup := e.Group("/payment")

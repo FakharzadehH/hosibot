@@ -45,6 +45,7 @@ type RedisConfig struct {
 type BotConfig struct {
 	Token      string
 	WebhookURL string
+	UpdateMode string
 	AdminID    string
 	Username   string
 	Domain     string
@@ -103,6 +104,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("DB_CHARSET", "utf8mb4")
 	viper.SetDefault("REDIS_ADDR", "localhost:6379")
 	viper.SetDefault("REDIS_DB", 0)
+	viper.SetDefault("BOT_UPDATE_MODE", "auto")
 	viper.SetDefault("JWT_EXPIRY", "24h")
 	viper.SetDefault("ZARINPAL_SANDBOX", false)
 	viper.SetDefault("API_HASH_FILE", "hash.txt")
@@ -133,6 +135,7 @@ func Load() (*Config, error) {
 		Bot: BotConfig{
 			Token:      viper.GetString("BOT_TOKEN"),
 			WebhookURL: viper.GetString("BOT_WEBHOOK_URL"),
+			UpdateMode: viper.GetString("BOT_UPDATE_MODE"),
 			AdminID:    viper.GetString("BOT_ADMIN_ID"),
 			Username:   viper.GetString("BOT_USERNAME"),
 			Domain:     viper.GetString("BOT_DOMAIN"),

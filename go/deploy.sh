@@ -232,7 +232,8 @@ print_installation_status() {
 }
 
 check_ssl_status() {
-  local bot_domain bot_webhook domain cert_path expiry_date current_ts expiry_ts days_left
+  local bot_domain bot_webhook domain cert_path key_path cert_kind
+  local expiry_date current_ts expiry_ts days_left
   bot_domain="${BOT_DOMAIN:-$(get_env_value BOT_DOMAIN)}"
   bot_webhook="${BOT_WEBHOOK_URL:-$(get_env_value BOT_WEBHOOK_URL)}"
 
@@ -247,7 +248,15 @@ check_ssl_status() {
   fi
 
   cert_path="/etc/letsencrypt/live/$domain/cert.pem"
+  key_path="/etc/letsencrypt/live/$domain/privkey.pem"
+  cert_kind="letsencrypt"
   if [[ ! -f "$cert_path" ]]; then
+    cert_path="${SSL_CERT_PATH:-$(get_env_value SSL_CERT_PATH)}"
+    key_path="${SSL_KEY_PATH:-$(get_env_value SSL_KEY_PATH)}"
+    cert_kind="custom"
+  fi
+
+  if [[ -z "$cert_path" || ! -f "$cert_path" ]]; then
     printf "%b\n" "SSL certificate:   ${C_YELLOW}NOT FOUND${C_RESET} ($domain)"
     return
   fi
@@ -267,10 +276,378 @@ check_ssl_status() {
 
   days_left=$(( (expiry_ts - current_ts) / 86400 ))
   if (( days_left >= 0 )); then
-    printf "%b\n" "SSL certificate:   ${C_GREEN}VALID${C_RESET} (${days_left} days left, $domain)"
+    if [[ "$cert_kind" == "letsencrypt" ]]; then
+      printf "%b\n" "SSL certificate:   ${C_GREEN}VALID${C_RESET} (${days_left} days left, $domain)"
+    else
+      printf "%b\n" "SSL certificate:   ${C_GREEN}VALID${C_RESET} (${days_left} days left, custom cert for $domain)"
+    fi
   else
     printf "%b\n" "SSL certificate:   ${C_RED}EXPIRED${C_RESET} (${days_left} days, $domain)"
   fi
+}
+
+install_tls_stack() {
+  info "Installing TLS stack (nginx + certbot + openssl)"
+
+  if command -v apt-get >/dev/null 2>&1; then
+    run_root apt-get update
+    if run_root apt-get install -y nginx certbot python3-certbot-nginx openssl; then
+      success "Installed nginx/certbot via apt"
+    else
+      warn "Could not install nginx/certbot via apt"
+    fi
+    return
+  fi
+
+  if command -v dnf >/dev/null 2>&1; then
+    if run_root dnf install -y nginx certbot python3-certbot-nginx openssl; then
+      success "Installed nginx/certbot via dnf"
+    else
+      warn "Could not install nginx/certbot via dnf"
+    fi
+    return
+  fi
+
+  if command -v yum >/dev/null 2>&1; then
+    if run_root yum install -y nginx certbot python3-certbot-nginx openssl; then
+      success "Installed nginx/certbot via yum"
+    else
+      warn "Could not install nginx/certbot via yum"
+    fi
+    return
+  fi
+
+  if command -v pacman >/dev/null 2>&1; then
+    if run_root pacman -Sy --noconfirm nginx certbot openssl; then
+      success "Installed nginx/certbot via pacman"
+    else
+      warn "Could not install nginx/certbot via pacman"
+    fi
+    return
+  fi
+
+  warn "Unsupported package manager. Install nginx/certbot manually."
+}
+
+start_nginx_service() {
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl list-unit-files | awk '{print $1}' | grep -qx "nginx.service"; then
+      run_root systemctl enable --now nginx.service || true
+      if systemctl is-active --quiet nginx.service; then
+        success "Nginx service is active: nginx.service"
+      else
+        warn "Nginx service exists but is not active: nginx.service"
+      fi
+      return
+    fi
+  fi
+
+  if command -v service >/dev/null 2>&1 && [[ -x "/etc/init.d/nginx" ]]; then
+    run_root service nginx start >/dev/null 2>&1 || true
+    if run_root service nginx status >/dev/null 2>&1; then
+      success "Nginx service is active: nginx (SysV init)"
+    else
+      warn "Nginx service start attempted via SysV init"
+    fi
+    return
+  fi
+
+  warn "No nginx service unit detected (systemd/SysV)."
+}
+
+reload_nginx_service() {
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl list-unit-files | awk '{print $1}' | grep -qx "nginx.service"; then
+      run_root systemctl reload nginx.service || run_root systemctl restart nginx.service || true
+      return
+    fi
+  fi
+
+  if command -v service >/dev/null 2>&1 && [[ -x "/etc/init.d/nginx" ]]; then
+    run_root service nginx reload >/dev/null 2>&1 || run_root service nginx restart >/dev/null 2>&1 || true
+    return
+  fi
+}
+
+suggest_tls_domain() {
+  load_env
+  local domain
+  domain="$(extract_domain "${BOT_DOMAIN:-}")"
+  if [[ -z "$domain" ]]; then
+    domain="$(extract_domain "${BOT_WEBHOOK_URL:-}")"
+  fi
+  printf "%s" "$domain"
+}
+
+prompt_tls_domain() {
+  local suggested input domain
+  suggested="$(suggest_tls_domain)"
+  read -r -p "Domain for TLS certificate [$suggested]: " input
+  domain="${input:-$suggested}"
+  domain="$(extract_domain "$domain")"
+  printf "%s" "$domain"
+}
+
+write_nginx_hosibot_conf() {
+  local domain="$1"
+  local app_port="$2"
+  local cert_path="${3:-}"
+  local key_path="${4:-}"
+  local tmp_file
+  tmp_file="$(mktemp)"
+
+  if [[ -n "$cert_path" && -n "$key_path" ]]; then
+    cat >"$tmp_file" <<NGINX
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $domain;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name $domain;
+
+    ssl_certificate $cert_path;
+    ssl_certificate_key $key_path;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+
+    location / {
+        proxy_pass http://127.0.0.1:$app_port;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+NGINX
+  else
+    cat >"$tmp_file" <<NGINX
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $domain;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:$app_port;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+NGINX
+  fi
+
+  run_root mkdir -p /etc/nginx/conf.d /var/www/certbot
+  run_root cp "$tmp_file" /etc/nginx/conf.d/hosibot.conf
+  rm -f "$tmp_file"
+
+  if ! run_root nginx -t >/dev/null 2>&1; then
+    error "Nginx config validation failed (nginx -t)."
+    return 1
+  fi
+
+  reload_nginx_service
+  success "Nginx reverse proxy configured for $domain"
+  return 0
+}
+
+configure_tls_webhook_env() {
+  local domain="$1"
+  load_env
+  set_env_value "BOT_DOMAIN" "https://$domain"
+
+  if [[ "${BOT_UPDATE_MODE:-auto}" != "polling" && -n "${BOT_TOKEN:-}" ]]; then
+    local webhook
+    webhook="$(build_default_webhook "https://$domain" "${BOT_TOKEN}")"
+    set_env_value "BOT_WEBHOOK_URL" "$webhook"
+    success "Updated BOT_DOMAIN/BOT_WEBHOOK_URL in $ENV_FILE"
+  else
+    success "Updated BOT_DOMAIN in $ENV_FILE"
+  fi
+}
+
+configure_tls_letsencrypt() {
+  banner
+  load_env
+
+  local domain email app_port cert_path key_path input
+  domain="$(prompt_tls_domain)"
+  if [[ -z "$domain" ]]; then
+    error "Domain is required."
+    pause
+    return
+  fi
+
+  app_port="${APP_PORT:-8080}"
+  email="${SSL_EMAIL:-$(get_env_value SSL_EMAIL)}"
+  read -r -p "Email for Let's Encrypt notifications [$email]: " input
+  email="${input:-$email}"
+
+  install_tls_stack
+  start_nginx_service
+
+  if command -v ufw >/dev/null 2>&1; then
+    run_root ufw allow 80/tcp >/dev/null 2>&1 || true
+    run_root ufw allow 443/tcp >/dev/null 2>&1 || true
+  fi
+
+  if ! write_nginx_hosibot_conf "$domain" "$app_port"; then
+    pause
+    return
+  fi
+
+  info "Requesting Let's Encrypt certificate for $domain"
+  if [[ -n "$email" ]]; then
+    if ! run_root certbot certonly --webroot -w /var/www/certbot -d "$domain" --agree-tos --non-interactive --email "$email" --keep-until-expiring; then
+      error "Let's Encrypt certificate issuance failed."
+      pause
+      return
+    fi
+    set_env_value "SSL_EMAIL" "$email"
+  else
+    warn "No SSL_EMAIL provided. Registering without email."
+    if ! run_root certbot certonly --webroot -w /var/www/certbot -d "$domain" --agree-tos --non-interactive --register-unsafely-without-email --keep-until-expiring; then
+      error "Let's Encrypt certificate issuance failed."
+      pause
+      return
+    fi
+  fi
+
+  cert_path="/etc/letsencrypt/live/$domain/fullchain.pem"
+  key_path="/etc/letsencrypt/live/$domain/privkey.pem"
+  if [[ ! -f "$cert_path" || ! -f "$key_path" ]]; then
+    error "Certificate files not found after issuance."
+    pause
+    return
+  fi
+
+  if ! write_nginx_hosibot_conf "$domain" "$app_port" "$cert_path" "$key_path"; then
+    pause
+    return
+  fi
+
+  set_env_value "SSL_CERT_PATH" ""
+  set_env_value "SSL_KEY_PATH" ""
+  configure_tls_webhook_env "$domain"
+  check_ssl_status
+  success "TLS setup completed (Let's Encrypt + Nginx reverse proxy)."
+
+  if confirm "Call Telegram setWebhook now?" "Y"; then
+    telegram_set_webhook
+    return
+  fi
+
+  pause
+}
+
+renew_tls_certificates() {
+  banner
+  install_tls_stack
+  start_nginx_service
+
+  info "Renewing Let's Encrypt certificates"
+  if run_root certbot renew; then
+    reload_nginx_service
+    success "Certificate renewal completed."
+  else
+    error "Certificate renewal failed."
+  fi
+
+  check_ssl_status
+  pause
+}
+
+generate_self_signed_tls() {
+  banner
+  load_env
+
+  local domain app_port cert_dir cert_path key_path
+  domain="$(prompt_tls_domain)"
+  if [[ -z "$domain" ]]; then
+    error "Domain is required."
+    pause
+    return
+  fi
+
+  app_port="${APP_PORT:-8080}"
+  cert_dir="/etc/hosibot/certs"
+  cert_path="$cert_dir/$domain.crt"
+  key_path="$cert_dir/$domain.key"
+
+  install_tls_stack
+  start_nginx_service
+
+  run_root mkdir -p "$cert_dir"
+  if ! run_root openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout "$key_path" -out "$cert_path" -subj "/CN=$domain" >/dev/null 2>&1; then
+    error "Failed to generate self-signed certificate."
+    pause
+    return
+  fi
+
+  if ! write_nginx_hosibot_conf "$domain" "$app_port" "$cert_path" "$key_path"; then
+    pause
+    return
+  fi
+
+  set_env_value "SSL_CERT_PATH" "$cert_path"
+  set_env_value "SSL_KEY_PATH" "$key_path"
+  configure_tls_webhook_env "$domain"
+  check_ssl_status
+  warn "Self-signed certificate installed. Telegram webhook may reject it unless you upload certificate explicitly."
+  pause
+}
+
+tls_menu() {
+  while true; do
+    banner
+    printf "%b\n" "${C_BOLD}TLS / SSL Menu${C_RESET}"
+    line
+    check_ssl_status
+    line
+    cat <<MENU
+1) Install TLS dependencies (nginx/certbot)
+2) Issue/Install Let's Encrypt cert + Nginx proxy
+3) Renew Let's Encrypt certs
+4) Generate self-signed cert + Nginx proxy
+5) Check SSL status
+6) Back
+MENU
+
+    read -r -p "Select: " ch
+    case "$ch" in
+      1) banner; install_tls_stack; start_nginx_service; pause ;;
+      2) configure_tls_letsencrypt ;;
+      3) renew_tls_certificates ;;
+      4) generate_self_signed_tls ;;
+      5) banner; check_ssl_status; pause ;;
+      6) return ;;
+      *) warn "Invalid choice"; pause ;;
+    esac
+  done
 }
 
 install_mysql_stack() {
@@ -760,7 +1137,7 @@ install_dependencies() {
   banner
   info "Installing deployment dependencies"
 
-  local pkgs=(curl git ca-certificates jq tar gzip unzip python3)
+  local pkgs=(curl git ca-certificates jq tar gzip unzip python3 openssl)
 
   if command -v apt-get >/dev/null 2>&1; then
     run_root apt-get update
@@ -812,7 +1189,7 @@ configure_env_wizard() {
 
   local app_port app_env db_host db_port db_name db_user db_pass db_charset
   local redis_addr redis_pass redis_db
-  local bot_token bot_domain bot_webhook bot_admin bot_username api_key jwt_secret
+  local bot_token bot_domain bot_webhook bot_update_mode bot_admin bot_username api_key jwt_secret
 
   app_port="${APP_PORT:-8080}"
   app_env="${APP_ENV:-production}"
@@ -827,6 +1204,7 @@ configure_env_wizard() {
   redis_db="${REDIS_DB:-0}"
   bot_token="${BOT_TOKEN:-}"
   bot_domain="$(normalize_domain "${BOT_DOMAIN:-}")"
+  bot_update_mode="${BOT_UPDATE_MODE:-auto}"
   bot_admin="${BOT_ADMIN_ID:-}"
   bot_username="${BOT_USERNAME:-}"
   api_key="${API_KEY:-$(random_secret)}"
@@ -858,6 +1236,18 @@ configure_env_wizard() {
   bot_webhook="${BOT_WEBHOOK_URL:-$suggested_webhook}"
   read -r -p "BOT_WEBHOOK_URL [$bot_webhook]: " input
   bot_webhook="${input:-$bot_webhook}"
+  read -r -p "BOT_UPDATE_MODE [$bot_update_mode] (auto|webhook|polling): " input
+  bot_update_mode="${input:-$bot_update_mode}"
+  case "${bot_update_mode,,}" in
+    auto|webhook|polling) ;;
+    *)
+      warn "Invalid BOT_UPDATE_MODE, using auto."
+      bot_update_mode="auto"
+      ;;
+  esac
+  if [[ "${bot_update_mode,,}" == "polling" ]]; then
+    bot_webhook=""
+  fi
 
   read -r -p "BOT_ADMIN_ID [$bot_admin]: " input; bot_admin="${input:-$bot_admin}"
   read -r -p "BOT_USERNAME [$bot_username]: " input; bot_username="${input:-$bot_username}"
@@ -889,6 +1279,7 @@ configure_env_wizard() {
   set_env_value "BOT_TOKEN" "$bot_token"
   set_env_value "BOT_DOMAIN" "$bot_domain"
   set_env_value "BOT_WEBHOOK_URL" "$bot_webhook"
+  set_env_value "BOT_UPDATE_MODE" "$bot_update_mode"
   set_env_value "BOT_ADMIN_ID" "$bot_admin"
   set_env_value "BOT_USERNAME" "$bot_username"
 
@@ -1283,6 +1674,12 @@ telegram_get_webhook() {
 telegram_set_webhook() {
   banner
   load_env
+  local cert_path
+  if [[ "${BOT_UPDATE_MODE:-auto}" == "polling" ]]; then
+    warn "BOT_UPDATE_MODE is polling. Webhook is not used in polling mode."
+    pause
+    return
+  fi
   local url="${BOT_WEBHOOK_URL:-}"
 
   if [[ -z "$url" ]]; then
@@ -1300,7 +1697,15 @@ telegram_set_webhook() {
     return
   fi
 
-  telegram_api_post "setWebhook" --data-urlencode "url=$url" | print_json
+  cert_path="${SSL_CERT_PATH:-$(get_env_value SSL_CERT_PATH)}"
+  if [[ -n "$cert_path" && -f "$cert_path" ]]; then
+    info "Uploading custom certificate with webhook request: $cert_path"
+    curl -sS --max-time 25 -X POST "https://api.telegram.org/bot${BOT_TOKEN}/setWebhook" \
+      -F "url=$url" \
+      -F "certificate=@$cert_path" | print_json
+  else
+    telegram_api_post "setWebhook" --data-urlencode "url=$url" | print_json
+  fi
 
   if confirm "Save this URL to BOT_WEBHOOK_URL in .env?" "Y"; then
     set_env_value "BOT_WEBHOOK_URL" "$url"
@@ -1329,6 +1734,7 @@ health_check() {
   printf "REDIS_ADDR=%s REDIS_DB=%s\n" "${REDIS_ADDR:-}" "${REDIS_DB:-}"
   printf "BOT_DOMAIN=%s\n" "${BOT_DOMAIN:-}"
   printf "BOT_WEBHOOK_URL=%s\n" "${BOT_WEBHOOK_URL:-}"
+  printf "BOT_UPDATE_MODE=%s\n" "${BOT_UPDATE_MODE:-auto}"
   printf "BOT_TOKEN=%s\n" "$(mask_value "${BOT_TOKEN:-}")"
   line
 
@@ -1565,6 +1971,10 @@ quick_deploy() {
     service_action start || true
   fi
 
+  if [[ "${BOT_UPDATE_MODE:-auto}" != "polling" ]] && confirm "Setup TLS (Let's Encrypt + Nginx) now?" "Y"; then
+    configure_tls_letsencrypt
+  fi
+
   if confirm "Set Telegram webhook now?" "Y"; then
     telegram_set_webhook
   fi
@@ -1676,10 +2086,11 @@ main_menu() {
 9) Background process manager
 10) Systemd service manager
 11) Telegram webhook manager
-12) Diagnostics / health check
-13) Bootstrap DB (MySQL + app schema)
-14) Backup .env
-15) Exit
+12) TLS / SSL manager
+13) Diagnostics / health check
+14) Bootstrap DB (MySQL + app schema)
+15) Backup .env
+16) Exit
 MENU
 
     read -r -p "Select: " choice
@@ -1695,10 +2106,11 @@ MENU
       9) background_menu ;;
       10) service_menu ;;
       11) telegram_menu ;;
-      12) health_check ;;
-      13) bootstrap_database ;;
-      14) backup_env ;;
-      15) exit 0 ;;
+      12) tls_menu ;;
+      13) health_check ;;
+      14) bootstrap_database ;;
+      15) backup_env ;;
+      16) exit 0 ;;
       *) warn "Invalid choice"; pause ;;
     esac
   done
@@ -1716,6 +2128,10 @@ Options:
   --quick-deploy   Run quick deploy flow
   --build          Download latest release binary
   --bootstrap-db   Bootstrap MySQL + app schema/default rows
+  --tls            Open TLS/SSL manager menu
+  --issue-cert     Issue Let's Encrypt cert and configure Nginx reverse proxy
+  --renew-cert     Renew Let's Encrypt certificates
+  --self-signed    Generate self-signed cert and configure Nginx reverse proxy
   --health         Run diagnostics
   --set-webhook    Configure Telegram webhook
   --help           Show this help
@@ -1730,6 +2146,10 @@ case "${1:---menu}" in
   --quick-deploy) quick_deploy ;;
   --build) build_binary ;;
   --bootstrap-db) bootstrap_database ;;
+  --tls) tls_menu ;;
+  --issue-cert) configure_tls_letsencrypt ;;
+  --renew-cert) renew_tls_certificates ;;
+  --self-signed) generate_self_signed_tls ;;
   --health) health_check ;;
   --set-webhook) telegram_set_webhook ;;
   --help|-h) usage ;;

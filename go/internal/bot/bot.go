@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -26,14 +27,15 @@ import (
 
 // Bot wraps the telebot instance and handlers.
 type Bot struct {
-	tb       *tele.Bot
-	webhook  *tele.Webhook
-	cfg      *config.Config
-	repos    *BotRepos
-	logger   *zap.Logger
-	panels   map[string]panel.PanelClient
-	keyboard *KeyboardBuilder
-	botAPI   *telegram.BotAPI
+	tb         *tele.Bot
+	webhook    *tele.Webhook
+	useWebhook bool
+	cfg        *config.Config
+	repos      *BotRepos
+	logger     *zap.Logger
+	panels     map[string]panel.PanelClient
+	keyboard   *KeyboardBuilder
+	botAPI     *telegram.BotAPI
 }
 
 // BotRepos bundles all repositories needed by bot handlers.
@@ -48,14 +50,39 @@ type BotRepos struct {
 
 // New creates and configures a new Bot instance.
 func New(cfg *config.Config, repos *BotRepos, botAPI *telegram.BotAPI, logger *zap.Logger) (*Bot, error) {
-	webhook := &tele.Webhook{
-		Listen:   "", // Empty: we mount on Echo instead of telebot's own server
-		Endpoint: &tele.WebhookEndpoint{PublicURL: cfg.Bot.WebhookURL},
+	mode := strings.ToLower(strings.TrimSpace(cfg.Bot.UpdateMode))
+	if mode == "" {
+		mode = "auto"
+	}
+
+	useWebhook := true
+	switch mode {
+	case "polling":
+		useWebhook = false
+	case "webhook":
+		useWebhook = true
+	default: // auto
+		useWebhook = strings.TrimSpace(cfg.Bot.WebhookURL) != ""
+	}
+
+	var poller tele.Poller
+	var webhook *tele.Webhook
+	if useWebhook {
+		if strings.TrimSpace(cfg.Bot.WebhookURL) == "" {
+			return nil, fmt.Errorf("BOT_WEBHOOK_URL is required when BOT_UPDATE_MODE=webhook")
+		}
+		webhook = &tele.Webhook{
+			Listen:   "", // Empty: we mount on Echo instead of telebot's own server
+			Endpoint: &tele.WebhookEndpoint{PublicURL: cfg.Bot.WebhookURL},
+		}
+		poller = webhook
+	} else {
+		poller = &tele.LongPoller{Timeout: 10 * time.Second}
 	}
 
 	pref := tele.Settings{
 		Token:  cfg.Bot.Token,
-		Poller: webhook,
+		Poller: poller,
 		OnError: func(err error, c tele.Context) {
 			logger.Error("telebot error", zap.Error(err))
 		},
@@ -67,14 +94,15 @@ func New(cfg *config.Config, repos *BotRepos, botAPI *telegram.BotAPI, logger *z
 	}
 
 	b := &Bot{
-		tb:       tb,
-		webhook:  webhook,
-		cfg:      cfg,
-		repos:    repos,
-		logger:   logger,
-		panels:   make(map[string]panel.PanelClient),
-		keyboard: NewKeyboardBuilder(repos),
-		botAPI:   botAPI,
+		tb:         tb,
+		webhook:    webhook,
+		useWebhook: useWebhook,
+		cfg:        cfg,
+		repos:      repos,
+		logger:     logger,
+		panels:     make(map[string]panel.PanelClient),
+		keyboard:   NewKeyboardBuilder(repos),
+		botAPI:     botAPI,
 	}
 
 	b.registerHandlers()
@@ -87,15 +115,23 @@ func (b *Bot) GetTelebot() *tele.Bot {
 	return b.tb
 }
 
-// WebhookHandler returns the webhook as an http.Handler for mounting on Echo.
-// The webhook's ServeHTTP decodes the update and routes it to telebot.
-func (b *Bot) WebhookHandler() *tele.Webhook {
+// WebhookHandler returns the webhook handler for mounting on Echo.
+// Returns nil when running in long-polling mode.
+func (b *Bot) WebhookHandler() http.Handler {
 	return b.webhook
 }
 
 // Start begins polling/webhook processing.
 func (b *Bot) Start() {
-	b.logger.Info("Starting Telegram bot...")
+	if b.useWebhook {
+		b.logger.Info("Starting Telegram bot", zap.String("mode", "webhook"), zap.String("webhook_url", b.cfg.Bot.WebhookURL))
+	} else {
+		// Long polling requires webhook to be removed first.
+		if err := b.tb.RemoveWebhook(true); err != nil {
+			b.logger.Warn("Failed to remove webhook before long polling", zap.Error(err))
+		}
+		b.logger.Info("Starting Telegram bot", zap.String("mode", "polling"))
+	}
 	b.tb.Start()
 }
 
