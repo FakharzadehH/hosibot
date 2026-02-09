@@ -291,6 +291,8 @@ func (b *Bot) handleCallback(c tele.Context) error {
 	case data == "main_menu":
 		_ = b.repos.User.UpdateStep(chatID, "none")
 		return b.sendMainMenu(c, chatID)
+	case data == "admin_panel":
+		return c.Send("لطفاً از پنل وب مدیریت استفاده کنید.")
 
 	case data == "buy_service" || data == "buy":
 		_ = b.repos.User.UpdateStep(chatID, "buy_service")

@@ -3,6 +3,7 @@ package bot
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	tele "gopkg.in/telebot.v3"
@@ -61,11 +62,14 @@ func (kb *KeyboardBuilder) MainMenuKeyboard(user *models.User, setting *models.S
 				rows = append(rows, menu.Row(btns...))
 			}
 		}
+		if user != nil && kb.isAdminUser(user.ID) {
+			rows = append(rows, menu.Row(menu.Data("🔧 پنل مدیریت", "admin_panel")))
+		}
 		if len(rows) > 0 {
 			menu.Inline(rows...)
 		} else {
 			// Default inline layout
-			kb.defaultInlineMenu(menu)
+			kb.defaultInlineMenu(menu, user)
 		}
 	} else {
 		// Build reply keyboard
@@ -83,6 +87,9 @@ func (kb *KeyboardBuilder) MainMenuKeyboard(user *models.User, setting *models.S
 				rows = append(rows, menu.Row(btns...))
 			}
 		}
+		if user != nil && kb.isAdminUser(user.ID) {
+			rows = append(rows, menu.Row(menu.Text("🔧 پنل مدیریت")))
+		}
 
 		if len(rows) > 0 {
 			menu.Reply(rows...)
@@ -95,12 +102,16 @@ func (kb *KeyboardBuilder) MainMenuKeyboard(user *models.User, setting *models.S
 	return menu
 }
 
-func (kb *KeyboardBuilder) defaultInlineMenu(menu *tele.ReplyMarkup) {
-	menu.Inline(
+func (kb *KeyboardBuilder) defaultInlineMenu(menu *tele.ReplyMarkup, user *models.User) {
+	rows := []tele.Row{
 		menu.Row(menu.Data("🛒 خرید سرویس", "buy_service"), menu.Data("📋 سرویس‌های من", "my_services")),
 		menu.Row(menu.Data("💰 کیف پول", "wallet"), menu.Data("📩 پشتیبانی", "support")),
 		menu.Row(menu.Data("👤 حساب کاربری", "account"), menu.Data("📢 معرفی به دوستان", "referral")),
-	)
+	}
+	if user != nil && kb.isAdminUser(user.ID) {
+		rows = append(rows, menu.Row(menu.Data("🔧 پنل مدیریت", "admin_panel")))
+	}
+	menu.Inline(rows...)
 }
 
 func (kb *KeyboardBuilder) defaultReplyMenu(menu *tele.ReplyMarkup, user *models.User, setting *models.Setting) {
@@ -126,9 +137,8 @@ func (kb *KeyboardBuilder) defaultReplyMenu(menu *tele.ReplyMarkup, user *models
 	referralText := kb.getText("text_affiliates", "📢 معرفی به دوستان")
 	rows = append(rows, menu.Row(menu.Text(accountText), menu.Text(referralText)))
 
-	// Add admin button if user is admin
-	admin, err := kb.settingRepo.FindAdminByID(user.ID)
-	if err == nil && admin != nil {
+	// Add admin button if user is admin.
+	if user != nil && kb.isAdminUser(user.ID) {
 		rows = append(rows, menu.Row(menu.Text("🔧 پنل مدیریت")))
 	}
 
@@ -451,6 +461,26 @@ func (kb *KeyboardBuilder) PaymentMethodKeyboard(amount int, user *models.User) 
 func paySettingIn(value string, expected ...string) bool {
 	for _, item := range expected {
 		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(item)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (kb *KeyboardBuilder) isAdminUser(userID string) bool {
+	id := strings.TrimSpace(userID)
+	if id == "" {
+		return false
+	}
+
+	admin, err := kb.settingRepo.FindAdminByID(id)
+	if err == nil && admin != nil {
+		return true
+	}
+
+	// Fallback for deployments that rely on env admin ID without seeding admin table.
+	for _, part := range strings.Split(os.Getenv("BOT_ADMIN_ID"), ",") {
+		if strings.TrimSpace(part) == id {
 			return true
 		}
 	}

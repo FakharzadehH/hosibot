@@ -550,8 +550,8 @@ configure_tls_letsencrypt() {
     return
   fi
 
-  set_env_value "SSL_CERT_PATH" ""
-  set_env_value "SSL_KEY_PATH" ""
+  set_env_value "SSL_CERT_PATH" "$cert_path"
+  set_env_value "SSL_KEY_PATH" "$key_path"
   configure_tls_webhook_env "$domain"
   check_ssl_status
   success "TLS setup completed (Let's Encrypt + Nginx reverse proxy)."
