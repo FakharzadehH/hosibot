@@ -1,159 +1,133 @@
-# 🤖 Bot Mirza Panel
+# Hosibot (Go)
 
-A Powerful Bot for Selling VPN Services with Auto Configuration Build.
+Hosibot is the Go implementation of the Hosibot backend and Telegram bot runtime.
+It exposes legacy-compatible API routes, webhook handling, payment callbacks, cron jobs, and panel integrations.
 
-<p align="center">
-    <a href="https://t.me/mirzapanel" target="_blank">
-        <img src="https://img.shields.io/badge/Telegram-Group-blue?style=flat-square&logo=telegram" alt="Telegram Group"/>
-    </a>
-    <a href="https://github.com/mahdiMGF2/mirzabot" target="_blank">
-        <img src="https://img.shields.io/github/stars/mahdiMGF2/mirzabot?style=social" alt="GitHub Stars"/>
-    </a>
-    <a href="https://img.shields.io/github/forks/mahdiMGF2/mirzabot?style=flat-square" target="_blank">
-        <img src="https://img.shields.io/github/forks/mahdiMGF2/botmirzapanel?style=flat-square" alt="GitHub Forks"/>
-    </a>
-    <a href="https://github.com/mahdiMGF2/botmirzapanel/issues" target="_blank">
-        <img src="https://img.shields.io/github/issues/mahdiMGF2/mirzabot?style=flat-square" alt="GitHub Issues"/>
-    </a>
-</p>
+## Project layout
 
----
+- `go/cmd/main.go`: application entrypoint
+- `go/internal/`: bot, handlers, router, repositories, config, panel adapters
+- `go/deploy.sh`: deployment manager (interactive + CLI flags)
+- `go/.env.example`: environment template
 
-## 📚 Table of Contents
+## Requirements
 
-- [✨ Overview](#-overview)
-- [⚙️ Features](#️-features)
-- [🚀 Installation](#-installation)
-  - [Beta Installation](#️-beta-installation)
-  - [Updating the Bot](#-updating-bot)
-  - [Removing the Bot](#-removing)
-- [🧪 Go Migration (WIP)](#-go-migration-wip)
-- [💵 Financial Support](#-financial-support)
+- Linux server (systemd recommended)
+- MySQL/MariaDB
+- Redis
+- Telegram bot token
+- Public domain + TLS for webhook mode
 
----
-
-## ✨ Overview
-
-**Mirza Bot** is a feature-rich Telegram bot designed for selling VPN services for platforms like **Marzban**,**3x-ui panels**,**alireza panels**,**pasarguard**,**ibsng**,.... This bot simplifies the process of VPN subscription sales, enabling seamless automation, configuration building, and user management.
-
-Mirza Panel comes in two versions:
-
-1. **Free Version** 🆓: Offers basic functionalities to get started with VPN sales.
-2. **Subscription Version** 💎: Provides advanced features for businesses looking for more customization, detailed analytics, and enhanced management options.
-
-Whether you’re offering trial accounts or managing large-scale VPN services, this bot covers everything you need to run a successful VPN business.
-
----
-
-## ⚙️ Features
-
-### 🔹 **Free Version Features**
-
-- ✅ VPN Purchase with Auto Configuration Creation
-- ✅ View Purchased Services
-- ✅ Trial Accounts for Users
-- ✅ User Support Section
-- ✅ Verification via Phone Number
-- ✅ Payments via:
-  - Card-to-Card
-  - **NowPayments Gateway**
-  - **aqayepardakht Gateway**
-- ✅ Fully Automated Configuration Creation
-- ✅ Compatibility with All Protocols
-- ✅ Mandatory Channel Membership for Purchases
-- ✅ Detailed Purchase and Trial Account Reports
-- ✅ Tutorial Section with Admin-Customizable Content
-- ✅ Balance Management via Admin Panel
-- ✅ Multiple Admin Support
-- ✅ Manage Purchased Services:
-  - Renewals
-  - Additional Volume Purchases
-  - Configuration Retrieval
-  - Updating Service Links
-- ✅ FAQ Section
-- ✅ Text Customization from the Bot
-- ✅ Product and Panel Management
-- ✅ Admin-Specified Username Generation Methods
-- ✅ Configuration Settings Based on Protocols
-- ✅ Gateway Management
-
----
-
-## 🧪 Go Migration (WIP)
-
-The Go rewrite lives on the `go-migration` branch and starts with an Echo-based server scaffold.
-
-### Run the Go server (development)
-
-```pwsh
-Set-Location -Path "D:\Hosibot\hosibot"
-Set-Location -Path ".\go"
-go mod tidy
-go run .\cmd\server\main.go
-```
-
-Then open `http://localhost:8080/health` to verify the server is running.
-
-### 🔹 **Subscription Version Features**
-
-In addition to the features of the Free Version.
-To read the details, please refer to the link below.
-
-📌 **Subscription Purchase Guide**: [View Guide](https://t.me/mirzaperimium/4)
-
----
-
-## 🚀 Installation
-
-### Prerequisites
-
-Ensure you have the following before installation:
-
-- 🖥️ **Ubuntu Server 22**
-- 🌐 **A Domain Name**
-
-### 🔧 Installing the Bot (Stable Version)
-
-Run the following command in your server terminal:
+## Local development
 
 ```bash
-curl -o install.sh -L https://raw.githubusercontent.com/mahdiMGF2/mirzabot/main/install.sh && bash install.sh
+cd go
+cp .env.example .env
+# edit .env
+go mod download
+go run ./cmd
 ```
 
-When prompted, **select option 1** to complete the installation.
-
----
-
-## 🔄 updating bot
-
-To update your bot to the latest version, use the following command:
+Health check:
 
 ```bash
-curl -o install.sh -L https://raw.githubusercontent.com/mahdiMGF2/botmirzapanel/main/install.sh && bash install.sh
+curl -s http://127.0.0.1:${APP_PORT:-8080}/health
 ```
 
-## When prompted, **select option update** to remove the bot.
+## Environment configuration
 
-## ❌ removing
+At minimum, set these in `go/.env`:
 
-If you want to completely remove the bot from your server, run the following command:
+- `APP_PORT`
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS`
+- `REDIS_ADDR`, `REDIS_PASS`, `REDIS_DB`
+- `BOT_TOKEN`
+- `BOT_DOMAIN`
+- `BOT_WEBHOOK_URL`
+- `API_KEY`
+- `JWT_SECRET`
+
+See full template in `go/.env.example`.
+
+## Deploy with `deploy.sh`
+
+### Option A: From cloned repository
 
 ```bash
-curl -o install.sh -L https://raw.githubusercontent.com/mahdiMGF2/botmirzapanel/main/install.sh && bash install.sh
+cd /path/to/hosibot/go
+chmod +x deploy.sh
+./deploy.sh
 ```
 
-When prompted, **select option 3** to remove the bot.
+### Option B: Download deploy script with curl
 
----
+```bash
+mkdir -p /opt/hosibot && cd /opt/hosibot
+curl -fsSL -o deploy.sh https://raw.githubusercontent.com/FakharzadehH/hosibot/main/go/deploy.sh
+chmod +x deploy.sh
+./deploy.sh
+```
 
-## 💵 Financial Support
+## Recommended deployment flow
 
-If you find **Mirza Panel** helpful and would like to support its development, you can make a financial contribution via cryptocurrency.
+Run menu option `1) Quick deploy (recommended)`.
 
-<a href = "https://nowpayments.io/donation/permiumbotmirza">👉 Support the Project on NowPayments</a>
+It walks through:
 
-Your support ensures continued updates and improvements for this project. Thank you! 🙌
+1. Install dependencies (curl/git/jq/python3 + MySQL/MariaDB + Redis)
+2. `.env` wizard
+3. Download latest release binary
+4. Install/update systemd service
+5. Start service
+6. Set Telegram webhook
+7. Run diagnostics (`/health`, DB, Redis)
 
-### Contributors
+## Non-interactive deploy commands
 
-![Contributors](https://contrib.rocks/image?repo=mahdiMGF2/mirzabot)
+```bash
+cd go
+./deploy.sh --quick-deploy
+./deploy.sh --build
+./deploy.sh --set-webhook
+./deploy.sh --health
+```
+
+## Service and runtime management
+
+From deploy menu:
+
+- `6) Background process manager`
+- `7) Systemd service manager`
+- `8) Telegram webhook manager`
+- `9) Diagnostics / health check`
+
+If service is installed, default name is `hosibot.service`.
+
+## API and webhook endpoints
+
+- Health: `GET /health`
+- Legacy-compatible API base: `/api/*`
+- Bot webhook routes:
+  - `POST /bot/webhook`
+  - `POST /webhook/:token` (legacy route)
+- Payment callbacks:
+  - `/payment/zarinpal/callback`
+  - `/payment/nowpayments/callback`
+  - `/payment/tronado/callback`
+  - `/payment/iranpay/callback`
+  - `/payment/aqayepardakht/callback`
+
+## Updating
+
+To update binary to latest release:
+
+```bash
+cd go
+./deploy.sh --build
+```
+
+Then restart from service manager (menu option `7`) or:
+
+```bash
+sudo systemctl restart hosibot.service
+```
