@@ -409,6 +409,132 @@ start_redis_service() {
   warn "No redis systemd service unit detected"
 }
 
+mysql_ini_get_option() {
+  local file="$1"
+  local key="$2"
+  local content=""
+
+  if [[ -r "$file" ]]; then
+    content="$(cat "$file" 2>/dev/null || true)"
+  elif [[ $EUID -eq 0 ]] || command -v sudo >/dev/null 2>&1; then
+    content="$(run_root cat "$file" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$content" ]]; then
+    return 0
+  fi
+
+  printf "%s\n" "$content" | awk -v wanted="$(printf "%s" "$key" | tr '[:upper:]' '[:lower:]')" '
+    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    BEGIN { section="" }
+    /^[ \t]*[;#]/ { next }
+    /^[ \t]*\[/ {
+      section=tolower($0)
+      gsub(/[ \t\[\]]/, "", section)
+      next
+    }
+    {
+      line=$0
+      sub(/[ \t]*[;#].*$/, "", line)
+      if (line !~ /=/) next
+      k=line; sub(/=.*/, "", k); k=tolower(trim(k))
+      v=line; sub(/^[^=]*=/, "", v); v=trim(v)
+      if (
+        k==wanted &&
+        (section=="client" || section=="mysql" || section=="mysqladmin" || section=="mysql_upgrade" || section=="client-server")
+      ) {
+        print v
+        exit
+      }
+    }
+  ' | head -n1
+}
+
+discover_mysql_admin_config() {
+  local user pass socket host port
+  user="${MYSQL_ADMIN_USER:-}"
+  pass="${MYSQL_ADMIN_PASS:-}"
+  socket="${MYSQL_ADMIN_SOCKET:-}"
+  host="${MYSQL_ADMIN_HOST:-}"
+  port="${MYSQL_ADMIN_PORT:-}"
+
+  local files=(
+    "/root/.my.cnf"
+    "/etc/mysql/debian.cnf"
+    "/etc/mysql/my.cnf"
+    "/etc/mysql/conf.d/client.cnf"
+    "/etc/mysql/mysql.conf.d/client.cnf"
+    "/etc/mysql/mariadb.conf.d/50-client.cnf"
+    "/etc/my.cnf"
+    "/etc/my.cnf.d/client.cnf"
+  )
+
+  local file
+  for file in "${files[@]}"; do
+    [[ -f "$file" ]] || continue
+    [[ -z "$user" ]] && user="$(mysql_ini_get_option "$file" "user")"
+    [[ -z "$pass" ]] && pass="$(mysql_ini_get_option "$file" "password")"
+    [[ -z "$socket" ]] && socket="$(mysql_ini_get_option "$file" "socket")"
+    [[ -z "$host" ]] && host="$(mysql_ini_get_option "$file" "host")"
+    [[ -z "$port" ]] && port="$(mysql_ini_get_option "$file" "port")"
+  done
+
+  printf "%s\t%s\t%s\t%s\t%s\n" "$user" "$pass" "$socket" "$host" "$port"
+}
+
+run_mysql_admin_sql() {
+  local mysql_bin="$1"
+  local sql="$2"
+  local db_host="$3"
+  local db_port="$4"
+  local root_bootstrap_pass="$5"
+  local admin_user="$6"
+  local admin_pass="$7"
+  local admin_socket="$8"
+  local admin_host="$9"
+  local admin_port="${10}"
+
+  if run_root "$mysql_bin" --protocol=socket -e "$sql" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ -n "$admin_user" ]]; then
+    local final_host final_port
+    final_host="${admin_host:-$db_host}"
+    final_port="${admin_port:-$db_port}"
+
+    if [[ -n "$admin_socket" ]]; then
+      if [[ -n "$admin_pass" ]]; then
+        if run_root env MYSQL_PWD="$admin_pass" "$mysql_bin" --protocol=socket --socket="$admin_socket" -u "$admin_user" -e "$sql" >/dev/null 2>&1; then
+          return 0
+        fi
+      else
+        if run_root "$mysql_bin" --protocol=socket --socket="$admin_socket" -u "$admin_user" -e "$sql" >/dev/null 2>&1; then
+          return 0
+        fi
+      fi
+    fi
+
+    if [[ -n "$admin_pass" ]]; then
+      if run_root env MYSQL_PWD="$admin_pass" "$mysql_bin" -h "$final_host" -P "$final_port" -u "$admin_user" -e "$sql" >/dev/null 2>&1; then
+        return 0
+      fi
+    else
+      if run_root "$mysql_bin" -h "$final_host" -P "$final_port" -u "$admin_user" -e "$sql" >/dev/null 2>&1; then
+        return 0
+      fi
+    fi
+  fi
+
+  if [[ -n "$root_bootstrap_pass" ]]; then
+    if run_root env MYSQL_PWD="$root_bootstrap_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u root -e "$sql" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 bootstrap_database() {
   banner
   load_env
@@ -437,6 +563,7 @@ bootstrap_database() {
   start_mysql_service
 
   local db_host db_port db_name db_user db_pass db_charset root_bootstrap_pass
+  local admin_user admin_pass admin_socket admin_host admin_port
   db_host="${DB_HOST:-localhost}"
   db_port="${DB_PORT:-3306}"
   db_name="${DB_NAME:-}"
@@ -444,6 +571,7 @@ bootstrap_database() {
   db_pass="${DB_PASS:-}"
   db_charset="${DB_CHARSET:-utf8mb4}"
   root_bootstrap_pass="${MYSQL_ROOT_PASSWORD:-${DB_ROOT_PASS:-}}"
+  IFS=$'\t' read -r admin_user admin_pass admin_socket admin_host admin_port < <(discover_mysql_admin_config)
 
   if [[ -z "$db_name" || -z "$db_user" ]]; then
     error "DB_NAME and DB_USER must be set in $ENV_FILE before bootstrapping."
@@ -478,6 +606,9 @@ bootstrap_database() {
 
   info "Bootstrapping database using current .env credentials"
   info "Target DB: $db_name | User: $db_user | Host: $db_host:$db_port"
+  if [[ -n "$admin_user" ]]; then
+    info "Discovered MySQL admin credentials from config files (user: $admin_user)."
+  fi
 
   if [[ -n "$db_pass" ]]; then
     if MYSQL_PWD="$db_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u "$db_user" -e "$create_db_sql" >/dev/null 2>&1; then
@@ -494,14 +625,9 @@ bootstrap_database() {
   fi
 
   local bootstrap_ok=0
-  if run_root "$mysql_bin" --protocol=socket -e "$admin_sql" >/dev/null 2>&1; then
+  if run_mysql_admin_sql "$mysql_bin" "$admin_sql" "$db_host" "$db_port" "$root_bootstrap_pass" "$admin_user" "$admin_pass" "$admin_socket" "$admin_host" "$admin_port"; then
     bootstrap_ok=1
-    success "Database and grants bootstrapped for '$db_user' via local socket admin."
-  elif [[ -n "$root_bootstrap_pass" ]]; then
-    if run_root env MYSQL_PWD="$root_bootstrap_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u root -e "$admin_sql" >/dev/null 2>&1; then
-      bootstrap_ok=1
-      success "Database and grants bootstrapped for '$db_user' via root password auth."
-    fi
+    success "Database and grants bootstrapped for '$db_user' via admin credentials."
   fi
 
   if [[ "$bootstrap_ok" -eq 0 ]]; then
@@ -545,12 +671,8 @@ bootstrap_database() {
     app_sql+="FLUSH PRIVILEGES;"
 
     local app_bootstrap_ok=0
-    if run_root "$mysql_bin" --protocol=socket -e "$app_sql" >/dev/null 2>&1; then
+    if run_mysql_admin_sql "$mysql_bin" "$app_sql" "$db_host" "$db_port" "$root_bootstrap_pass" "$admin_user" "$admin_pass" "$admin_socket" "$admin_host" "$admin_port"; then
       app_bootstrap_ok=1
-    elif [[ -n "$root_bootstrap_pass" ]]; then
-      if run_root env MYSQL_PWD="$root_bootstrap_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u root -e "$app_sql" >/dev/null 2>&1; then
-        app_bootstrap_ok=1
-      fi
     fi
 
     if [[ "$app_bootstrap_ok" -eq 1 ]] && MYSQL_PWD="$app_db_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u "$app_db_user" -D "$db_name" -e "SELECT 1;" >/dev/null 2>&1; then
@@ -1251,12 +1373,14 @@ drop_database_and_user() {
   load_env
 
   local db_name db_user db_pass db_host db_port root_bootstrap_pass mysql_bin db_name_esc db_user_esc
+  local admin_user admin_pass admin_socket admin_host admin_port
   db_name="${DB_NAME:-}"
   db_user="${DB_USER:-}"
   db_pass="${DB_PASS:-}"
   db_host="${DB_HOST:-localhost}"
   db_port="${DB_PORT:-3306}"
   root_bootstrap_pass="${MYSQL_ROOT_PASSWORD:-${DB_ROOT_PASS:-}}"
+  IFS=$'\t' read -r admin_user admin_pass admin_socket admin_host admin_port < <(discover_mysql_admin_config)
 
   if [[ -z "$db_name" || -z "$db_user" ]]; then
     warn "DB_NAME/DB_USER missing in $ENV_FILE. Skipping DB cleanup."
@@ -1284,16 +1408,9 @@ drop_database_and_user() {
   drop_sql+="DROP USER IF EXISTS '$db_user_esc'@'%';"$'\n'
   drop_sql+="FLUSH PRIVILEGES;"
 
-  if run_root "$mysql_bin" --protocol=socket -e "$drop_sql" >/dev/null 2>&1; then
-    success "Dropped database '$db_name' and user '$db_user' via local socket admin."
+  if run_mysql_admin_sql "$mysql_bin" "$drop_sql" "$db_host" "$db_port" "$root_bootstrap_pass" "$admin_user" "$admin_pass" "$admin_socket" "$admin_host" "$admin_port"; then
+    success "Dropped database '$db_name' and user '$db_user' via admin credentials."
     return
-  fi
-
-  if [[ -n "$root_bootstrap_pass" ]]; then
-    if run_root env MYSQL_PWD="$root_bootstrap_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u root -e "$drop_sql" >/dev/null 2>&1; then
-      success "Dropped database '$db_name' and user '$db_user' via root password auth."
-      return
-    fi
   fi
 
   if [[ -n "$db_pass" ]] && MYSQL_PWD="$db_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u "$db_user" -e "DROP DATABASE IF EXISTS \`$db_name_esc\`;" >/dev/null 2>&1; then
