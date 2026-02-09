@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"strconv"
+
 	"gorm.io/gorm"
 
 	"hosibot/internal/models"
@@ -123,6 +125,27 @@ func (r *InvoiceRepository) CountByProductCode(code string) (int64, error) {
 	var count int64
 	err := r.db.Model(&models.Invoice{}).Where("name_product = ?", code).Count(&count).Error
 	return count, err
+}
+
+// ProductStatsByName returns invoice count and sum_price for a product name.
+// PHP parity: SELECT COUNT(username), SUM(price_product) FROM invoice WHERE name_product = ?
+func (r *InvoiceRepository) ProductStatsByName(name string) (int64, int64, error) {
+	var prices []string
+	if err := r.db.Model(&models.Invoice{}).
+		Where("name_product = ?", name).
+		Pluck("price_product", &prices).Error; err != nil {
+		return 0, 0, err
+	}
+
+	var sum int64
+	for _, raw := range prices {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			continue
+		}
+		sum += v
+	}
+	return int64(len(prices)), sum, nil
 }
 
 // FindServices returns all active services (invoices with active status).

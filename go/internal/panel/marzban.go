@@ -97,12 +97,22 @@ func (m *MarzbanClient) GetUser(ctx context.Context, username string) (*PanelUse
 	if v, ok := raw["expire"].(float64); ok {
 		user.ExpireTime = int64(v)
 	}
-	if v, ok := raw["online_at"].(string); ok {
-		user.OnlineAt = 0 // parse as needed
-		_ = v
+	if onlineRaw, ok := raw["online_at"].(string); ok {
+		onlineRaw = strings.TrimSpace(onlineRaw)
+		if strings.EqualFold(onlineRaw, "online") || strings.EqualFold(onlineRaw, "offline") {
+			user.OnlineStatus = strings.ToLower(onlineRaw)
+		} else {
+			user.OnlineAt = parseAnyTime(onlineRaw)
+		}
 	}
 	if v, ok := raw["subscription_url"].(string); ok {
 		user.SubLink = v
+	}
+	if v, ok := raw["sub_updated_at"].(string); ok {
+		user.SubUpdatedAt = strings.TrimSpace(v)
+	}
+	if v, ok := raw["sub_last_user_agent"].(string); ok {
+		user.SubLastAgent = strings.TrimSpace(v)
 	}
 	if links, ok := raw["links"].([]interface{}); ok {
 		for _, l := range links {

@@ -413,7 +413,24 @@ func (h *DiscountHandler) listDiscountSells(c echo.Context, body map[string]inte
 		return errorResponse(c, "Failed to retrieve discount sells")
 	}
 
-	return successResponse(c, "Successful", paginatedNamedResponse("discountsell", sells, total, page, limit))
+	resp := paginatedNamedResponse("discount", sells, total, page, limit)
+
+	products := []map[string]interface{}{}
+	_ = h.repos.Setting.DB().
+		Table("product").
+		Select("code_product AS id, name_product").
+		Find(&products).Error
+	resp["product"] = products
+
+	panels := []map[string]interface{}{}
+	_ = h.repos.Setting.DB().
+		Table("marzban_panel").
+		Select("code_panel, name_panel").
+		Where("status = ?", "active").
+		Find(&panels).Error
+	resp["panel"] = panels
+
+	return successResponse(c, "Successful", resp)
 }
 
 func (h *DiscountHandler) getDiscountSell(c echo.Context, body map[string]interface{}) error {
@@ -514,7 +531,7 @@ func (h *CategoryHandler) listCategories(c echo.Context, body map[string]interfa
 		return errorResponse(c, "Failed to retrieve categories")
 	}
 
-	return successResponse(c, "Successful", paginatedNamedResponse("category", categories, total, page, limit))
+	return successResponse(c, "Successful", paginatedNamedResponse("categorys", categories, total, page, limit))
 }
 
 func (h *CategoryHandler) getCategory(c echo.Context, body map[string]interface{}) error {

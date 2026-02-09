@@ -284,9 +284,13 @@ func (h *MiniAppHandler) service(c echo.Context, body map[string]interface{}) er
 			"filename": panelModel.InboundID + "_" + invoice.IDUser + "_" + invoice.IDInvoice + ".config",
 		})
 	case "mikrotik", "ibsng":
+		passwordValue := strings.TrimSpace(panelUser.SubLink)
+		if passwordValue == "" {
+			passwordValue = strings.TrimSpace(invoice.UUID)
+		}
 		serviceOutput = append(serviceOutput, map[string]interface{}{
 			"type":  "password",
-			"value": "",
+			"value": passwordValue,
 		})
 	}
 
@@ -294,10 +298,8 @@ func (h *MiniAppHandler) service(c echo.Context, body map[string]interface{}) er
 	if panelUser.ExpireTime > 0 {
 		expirationDate = time.Unix(panelUser.ExpireTime, 0).Format("2006/01/02")
 	}
-	lastOnline := "متصل نشده"
-	if panelUser.OnlineAt > 0 {
-		lastOnline = time.Unix(panelUser.OnlineAt, 0).Format("2006/01/02 15:04:05")
-	}
+	lastOnline := miniappOnlineText(panelUser.OnlineStatus, panelUser.OnlineAt)
+	lastSubscriptionUpdate := miniappDateTimeTextOrNil(panelUser.SubUpdatedAt)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"status": true,
@@ -310,7 +312,7 @@ func (h *MiniAppHandler) service(c echo.Context, body map[string]interface{}) er
 			"used_traffic_gb":          roundFloat(usedGB, 2),
 			"remaining_traffic_gb":     roundFloat(remainGB, 2),
 			"expiration_time":          expirationDate,
-			"last_subscription_update": nil,
+			"last_subscription_update": lastSubscriptionUpdate,
 			"online_at":                lastOnline,
 			"service_output":           serviceOutput,
 		},
@@ -1065,6 +1067,61 @@ func roundFloat(v float64, decimals int) float64 {
 		pow *= 10
 	}
 	return float64(int(v*pow+0.5)) / pow
+}
+
+func miniappDateTimeTextOrNil(raw string) interface{} {
+	ts := parseMiniappTime(raw)
+	if ts <= 0 {
+		return nil
+	}
+	loc := time.FixedZone("Asia/Tehran", 3*3600+30*60)
+	return time.Unix(ts, 0).In(loc).Format("2006/01/02 15:04:05")
+}
+
+func miniappOnlineText(rawStatus string, onlineAt int64) string {
+	switch strings.ToLower(strings.TrimSpace(rawStatus)) {
+	case "online":
+		return "آنلاین"
+	case "offline":
+		return "آفلاین"
+	}
+	if onlineAt > 0 {
+		loc := time.FixedZone("Asia/Tehran", 3*3600+30*60)
+		return time.Unix(onlineAt, 0).In(loc).Format("2006/01/02 15:04:05")
+	}
+	if ts := parseMiniappTime(rawStatus); ts > 0 {
+		loc := time.FixedZone("Asia/Tehran", 3*3600+30*60)
+		return time.Unix(ts, 0).In(loc).Format("2006/01/02 15:04:05")
+	}
+	return "متصل نشده"
+}
+
+func parseMiniappTime(raw string) int64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.EqualFold(raw, "null") {
+		return 0
+	}
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if n > 1_000_000_000_000 {
+			return n / 1000
+		}
+		return n
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.Unix()
+		}
+		if t, err := time.ParseInLocation(layout, raw, time.UTC); err == nil {
+			return t.Unix()
+		}
+	}
+	return 0
 }
 
 func parseInboundsMap(raw string) map[string][]string {

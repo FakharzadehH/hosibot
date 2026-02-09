@@ -87,13 +87,14 @@ func (h *ProductHandler) getProduct(c echo.Context, body map[string]interface{})
 	// Get related info (panels list, categories, invoice stats)
 	panels, _ := h.repos.Panel.FindActive()
 	categories, _, _ := h.repos.Setting.FindAllCategories(0, 1, "")
-	invoiceCount, _ := h.repos.Invoice.CountByProductCode(product.CodeProduct)
+	invoiceCount, sumInvoice, _ := h.repos.Invoice.ProductStatsByName(product.NameProduct)
 
 	result := map[string]interface{}{
 		"product":       product,
 		"panels":        panels,
-		"categories":    categories,
-		"invoice_count": invoiceCount,
+		"category":      categories,
+		"count_invoice": invoiceCount,
+		"sum_invoice":   sumInvoice,
 	}
 
 	return successResponse(c, "Successful", result)

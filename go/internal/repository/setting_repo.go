@@ -2,7 +2,6 @@ package repository
 
 import (
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -275,7 +274,7 @@ func (r *SettingRepository) CreateAPILog(header, data interface{}, ip, actions s
 		Header:  string(headerJSON),
 		Data:    string(dataJSON),
 		IP:      ip,
-		Time:    fmt.Sprintf("%d", time.Now().Unix()),
+		Time:    time.Now().Format("2006/01/02 15:04:05"),
 		Actions: actions,
 	}
 	return r.db.Create(&log).Error

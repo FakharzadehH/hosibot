@@ -11,6 +11,9 @@ type PanelUser struct {
 	ExpireTime     int64             `json:"expire_time"`
 	SubLink        string            `json:"sub_link"`
 	OnlineAt       int64             `json:"online_at"`
+	OnlineStatus   string            `json:"online_status,omitempty"` // online/offline
+	SubUpdatedAt   string            `json:"sub_updated_at,omitempty"`
+	SubLastAgent   string            `json:"sub_last_user_agent,omitempty"`
 	Links          []string          `json:"links"`
 	Inbounds       map[string]string `json:"inbounds,omitempty"`
 	Proxies        map[string]string `json:"proxies,omitempty"`

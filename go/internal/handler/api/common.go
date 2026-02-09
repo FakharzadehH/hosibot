@@ -73,16 +73,10 @@ func paginatedNamedResponse(key string, data interface{}, total int64, page, lim
 		pagination["total_discount"] = total
 	case "products":
 		pagination["total_product"] = total
-	case "invoices":
-		pagination["total_invoice"] = total
-	case "payments":
-		pagination["total_payment"] = total
-	case "services":
-		pagination["total_service"] = total
-	case "category":
-		pagination["total_category"] = total
-	case "discountsell":
-		pagination["total_discountsell"] = total
+	case "invoices", "payments", "services":
+		pagination["total_record"] = total
+	case "category", "categorys":
+		pagination["total_categorys"] = total
 	default:
 		pagination["total_record"] = total
 	}

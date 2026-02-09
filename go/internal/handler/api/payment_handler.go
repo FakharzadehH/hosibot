@@ -38,6 +38,15 @@ func (h *PaymentHandler) listPayments(c echo.Context, body map[string]interface{
 	limit := getIntField(body, "limit", 50)
 	page := getIntField(body, "page", 1)
 	q := getStringField(body, "q")
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	if page <= 0 {
+		page = 1
+	}
 
 	payments, total, err := h.repos.Payment.FindAll(limit, page, q)
 	if err != nil {
@@ -45,7 +54,32 @@ func (h *PaymentHandler) listPayments(c echo.Context, body map[string]interface{
 		return errorResponse(c, "Failed to retrieve payments")
 	}
 
-	return successResponse(c, "Successful", paginatedNamedResponse("payments", payments, total, page, limit))
+	items := make([]map[string]interface{}, 0, len(payments))
+	for _, p := range payments {
+		items = append(items, map[string]interface{}{
+			"id":             p.IDOrder,
+			"id_user":        p.IDUser,
+			"time":           p.Time,
+			"price":          p.Price,
+			"payment_status": p.PaymentStatus,
+			"Payment_Method": p.PaymentMethod,
+		})
+	}
+
+	totalRecord := int(total) / limit
+	if int(total)%limit != 0 {
+		totalRecord++
+	}
+
+	return successResponse(c, "Successful", map[string]interface{}{
+		"payments": items,
+		"pagination": map[string]interface{}{
+			"total_record": totalRecord,
+			"total_pages":  limit, // keep legacy PHP behavior
+			"current_page": page,
+			"per_page":     limit,
+		},
+	})
 }
 
 func (h *PaymentHandler) getPayment(c echo.Context, body map[string]interface{}) error {

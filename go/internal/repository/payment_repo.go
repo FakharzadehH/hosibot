@@ -20,15 +20,17 @@ func (r *PaymentRepository) FindAll(limit, page int, query string) ([]models.Pay
 	var payments []models.PaymentReport
 	var total int64
 
-	db := r.db.Model(&models.PaymentReport{})
-
+	countDB := r.db.Model(&models.PaymentReport{})
+	dataDB := r.db.Model(&models.PaymentReport{})
 	if query != "" {
 		search := "%" + query + "%"
-		db = db.Where("id_order LIKE ? OR id_user LIKE ? OR Payment_Method LIKE ?",
-			search, search, search)
+		// Keep legacy PHP semantics:
+		// count by id_user only, list by id_user or id_order.
+		countDB = countDB.Where("id_user LIKE ?", search)
+		dataDB = dataDB.Where("id_user LIKE ? OR id_order LIKE ?", search, search)
 	}
 
-	if err := db.Count(&total).Error; err != nil {
+	if err := countDB.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -40,7 +42,7 @@ func (r *PaymentRepository) FindAll(limit, page int, query string) ([]models.Pay
 	}
 	offset := (page - 1) * limit
 
-	if err := db.Limit(limit).Offset(offset).Order("time DESC").Find(&payments).Error; err != nil {
+	if err := dataDB.Limit(limit).Offset(offset).Order("time DESC").Find(&payments).Error; err != nil {
 		return nil, 0, err
 	}
 	return payments, total, nil

@@ -459,10 +459,17 @@ func (p *PasarGuardClient) parseUserResponse(raw []byte) (*PanelUser, error) {
 		UsedTraffic:    parseInt64Any(data["used_traffic"]),
 		DataLimit:      parseInt64Any(data["data_limit"]),
 		ExpireTime:     parseTimeToUnix(data["expire"]),
-		OnlineAt:       parseTimeToUnix(data["online_at"]),
 		SubLink:        p.makeAbsoluteSubURL(getString(data, "subscription_url")),
 		Note:           getString(data, "note"),
 		DataLimitReset: getString(data, "data_limit_reset_strategy"),
+		SubUpdatedAt:   getString(data, "sub_updated_at"),
+		SubLastAgent:   getString(data, "sub_last_user_agent"),
+	}
+	onlineRaw := strings.TrimSpace(getString(data, "online_at"))
+	if strings.EqualFold(onlineRaw, "online") || strings.EqualFold(onlineRaw, "offline") {
+		user.OnlineStatus = strings.ToLower(onlineRaw)
+	} else {
+		user.OnlineAt = parseTimeToUnix(onlineRaw)
 	}
 
 	if links, ok := data["links"].([]interface{}); ok {
