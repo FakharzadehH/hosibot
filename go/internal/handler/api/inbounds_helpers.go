@@ -46,6 +46,34 @@ func extractPanelTemplate(panelModel *models.Panel, username string) (string, st
 		proxiesJSON, _ := json.Marshal(user.Proxies)
 		return string(inboundsJSON), string(proxiesJSON), nil
 	default:
-		return "", "", fmt.Errorf("panel_not_support_options")
+		user, err := client.GetUser(ctx, username)
+		if err != nil || user == nil {
+			return "", "", fmt.Errorf("panel_not_support_options")
+		}
+		inbounds := map[string][]string{}
+		proxies := map[string]string{}
+		for proto := range user.Inbounds {
+			proto = strings.TrimSpace(proto)
+			if proto == "" {
+				continue
+			}
+			inbounds[proto] = []string{}
+		}
+		for proto, flow := range user.Proxies {
+			proto = strings.TrimSpace(proto)
+			if proto == "" {
+				continue
+			}
+			proxies[proto] = strings.TrimSpace(flow)
+			if _, ok := inbounds[proto]; !ok {
+				inbounds[proto] = []string{}
+			}
+		}
+		if len(inbounds) == 0 && len(proxies) == 0 {
+			return "", "", fmt.Errorf("panel_not_support_options")
+		}
+		inboundsJSON, _ := json.Marshal(inbounds)
+		proxiesJSON, _ := json.Marshal(proxies)
+		return string(inboundsJSON), string(proxiesJSON), nil
 	}
 }

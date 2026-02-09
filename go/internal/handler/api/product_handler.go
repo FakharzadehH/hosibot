@@ -252,7 +252,7 @@ func (h *ProductHandler) setInbounds(c echo.Context, body map[string]interface{}
 	switch strings.ToLower(strings.TrimSpace(panelModel.Type)) {
 	case "ibsng", "mikrotik":
 		updates["inbounds"] = input
-	case "marzban", "pasarguard":
+	case "marzban", "pasarguard", "marzneshin", "hiddify", "alireza_single", "x-ui_single", "xui", "wgdashboard", "s_ui":
 		inboundsJSON, proxiesJSON, err := extractPanelTemplate(panelModel, input)
 		if err != nil {
 			return errorResponse(c, err.Error())

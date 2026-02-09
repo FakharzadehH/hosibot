@@ -90,6 +90,19 @@ func APILogger(settingRepo *repository.SettingRepository) echo.MiddlewareFunc {
 					payload = string(rawBody)
 				}
 			}
+			if payload == nil {
+				queryPayload := map[string]interface{}{}
+				q := c.QueryParams()
+				for key := range q {
+					queryPayload[key] = c.QueryParam(key)
+				}
+				if len(queryPayload) > 0 {
+					payload = queryPayload
+					if action, ok := queryPayload["actions"].(string); ok && strings.TrimSpace(action) != "" {
+						c.Set("api_actions", action)
+					}
+				}
+			}
 
 			// Execute the handler
 			err := next(c)

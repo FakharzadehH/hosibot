@@ -1,9 +1,12 @@
 package api
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 
@@ -68,6 +71,18 @@ func paginatedNamedResponse(key string, data interface{}, total int64, page, lim
 		pagination["total_panel"] = total
 	case "discount":
 		pagination["total_discount"] = total
+	case "products":
+		pagination["total_product"] = total
+	case "invoices":
+		pagination["total_invoice"] = total
+	case "payments":
+		pagination["total_payment"] = total
+	case "services":
+		pagination["total_service"] = total
+	case "category":
+		pagination["total_category"] = total
+	case "discountsell":
+		pagination["total_discountsell"] = total
 	default:
 		pagination["total_record"] = total
 	}
@@ -81,11 +96,22 @@ func paginatedNamedResponse(key string, data interface{}, total int64, page, lim
 // This is the core PHP routing mechanism: all API requests have an "actions" field.
 func parseBodyAction(c echo.Context) (string, map[string]interface{}, error) {
 	body := make(map[string]interface{})
-	if err := c.Bind(&body); err != nil {
-		// Try reading as JSON manually
+
+	// Bind JSON/form body when present.
+	if err := c.Bind(&body); err != nil && !errors.Is(err, io.EOF) {
 		return "", nil, err
 	}
+
+	// Legacy compatibility: allow GET/query-based action payloads.
+	query := c.QueryParams()
+	for k := range query {
+		if _, exists := body[k]; !exists {
+			body[k] = c.QueryParam(k)
+		}
+	}
+
 	action, _ := body["actions"].(string)
+	action = strings.TrimSpace(action)
 	c.Set("api_actions", action) // for logging middleware
 	return action, body, nil
 }

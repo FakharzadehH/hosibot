@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -262,15 +263,17 @@ func (c *CardToCardGateway) ParseCallback(payload map[string]interface{}) (*Call
 
 // TronadoGateway wraps Tronado verification and callback parsing.
 type TronadoGateway struct {
-	apiKey    string
-	verifyURL string
-	client    *httpclient.Client
+	apiKey     string
+	verifyURL  string
+	paymentURL string
+	client     *httpclient.Client
 }
 
 func NewTronadoGateway(apiKey string) *TronadoGateway {
 	return &TronadoGateway{
-		apiKey:    strings.TrimSpace(apiKey),
-		verifyURL: "https://bot.tronado.cloud/Order/GetStatus",
+		apiKey:     strings.TrimSpace(apiKey),
+		verifyURL:  "https://bot.tronado.cloud/Order/GetStatus",
+		paymentURL: "https://bot.tronado.cloud/Order/GetPaymentLink",
 		client: httpclient.New().
 			WithTimeout(30*time.Second).
 			WithHeader("Content-Type", "application/json").
@@ -283,7 +286,56 @@ func (t *TronadoGateway) Name() string {
 }
 
 func (t *TronadoGateway) InitiatePayment(ctx context.Context, amount int, orderID, description, callbackURL string) (*PaymentResult, error) {
-	return nil, fmt.Errorf("not implemented")
+	walletAddress := strings.TrimSpace(os.Getenv("TRONADO_WALLET_ADDRESS"))
+	desc := strings.TrimSpace(description)
+	if strings.HasPrefix(strings.ToLower(desc), "wallet:") {
+		walletAddress = strings.TrimSpace(strings.TrimPrefix(desc, "wallet:"))
+	}
+	if walletAddress == "" {
+		return nil, fmt.Errorf("wallet address is required for tronado payment")
+	}
+
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"PaymentID":     orderID,
+		"WalletAddress": walletAddress,
+		"TronAmount":    amount,
+		"CallbackUrl":   callbackURL,
+	})
+	rawResp, err := t.client.Post(t.paymentURL, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("tronado create payment failed: %w", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rawResp, &payload); err != nil {
+		return nil, fmt.Errorf("tronado parse create response failed: %w", err)
+	}
+
+	success := parseBoolAny(payload["IsSuccessful"])
+	if !success {
+		msg := parseStringAny(payload["Message"])
+		if msg == "" {
+			msg = parseStringAny(payload["message"])
+		}
+		if msg == "" {
+			msg = "tronado create payment failed"
+		}
+		return nil, fmt.Errorf(msg)
+	}
+
+	token := ""
+	if dataMap, ok := payload["Data"].(map[string]interface{}); ok {
+		token = parseStringAny(dataMap["Token"])
+	}
+	if token == "" {
+		return nil, fmt.Errorf("tronado did not return payment token")
+	}
+
+	return &PaymentResult{
+		OrderID:    orderID,
+		PaymentURL: "https://t.me/tronado_robot/customerpayment?startapp=" + token,
+		Authority:  token,
+	}, nil
 }
 
 func (t *TronadoGateway) CreatePayment(ctx context.Context, amount int, orderID, description, callbackURL string) (*PaymentResult, error) {
@@ -360,7 +412,47 @@ func (i *IranPayGateway) Name() string {
 }
 
 func (i *IranPayGateway) InitiatePayment(ctx context.Context, amount int, orderID, description, callbackURL string) (*PaymentResult, error) {
-	return nil, fmt.Errorf("not implemented")
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"ApiKey":      i.apiKey,
+		"Hash_id":     orderID,
+		"Amount":      fmt.Sprintf("%d", amount*10),
+		"CallbackURL": callbackURL,
+	})
+	rawResp, err := i.client.Post("https://tetra98.ir/api/create_order", reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("iranpay create payment failed: %w", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rawResp, &payload); err != nil {
+		return nil, fmt.Errorf("iranpay parse create response failed: %w", err)
+	}
+
+	status := parseIntAny(payload["status"])
+	if status != 100 {
+		msg := parseStringAny(payload["message"])
+		if msg == "" {
+			msg = "iranpay create payment failed"
+		}
+		return nil, fmt.Errorf(msg)
+	}
+
+	paymentURL := parseStringAny(payload["payment_url_bot"])
+	if paymentURL == "" {
+		paymentURL = parseStringAny(payload["payment_url"])
+	}
+	if paymentURL == "" {
+		paymentURL = parseStringAny(payload["url"])
+	}
+	if paymentURL == "" {
+		return nil, fmt.Errorf("iranpay did not return payment url")
+	}
+
+	return &PaymentResult{
+		OrderID:    orderID,
+		PaymentURL: paymentURL,
+		Authority:  parseStringAny(payload["Authority"]),
+	}, nil
 }
 
 func (i *IranPayGateway) CreatePayment(ctx context.Context, amount int, orderID, description, callbackURL string) (*PaymentResult, error) {
@@ -433,7 +525,41 @@ func (a *AqayePardakhtGateway) Name() string {
 }
 
 func (a *AqayePardakhtGateway) InitiatePayment(ctx context.Context, amount int, orderID, description, callbackURL string) (*PaymentResult, error) {
-	return nil, fmt.Errorf("not implemented")
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"pin":        a.pin,
+		"amount":     amount,
+		"callback":   callbackURL,
+		"invoice_id": orderID,
+	})
+	rawResp, err := a.client.Post("https://panel.aqayepardakht.ir/api/v2/create", reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("aqayepardakht create payment failed: %w", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rawResp, &payload); err != nil {
+		return nil, fmt.Errorf("aqayepardakht parse create response failed: %w", err)
+	}
+
+	status := strings.ToLower(strings.TrimSpace(parseStringAny(payload["status"])))
+	if status != "success" {
+		msg := parseStringAny(payload["message"])
+		if msg == "" {
+			msg = "aqayepardakht create payment failed"
+		}
+		return nil, fmt.Errorf(msg)
+	}
+
+	transID := parseStringAny(payload["transid"])
+	if transID == "" {
+		return nil, fmt.Errorf("aqayepardakht did not return transid")
+	}
+
+	return &PaymentResult{
+		OrderID:    orderID,
+		PaymentURL: "https://panel.aqayepardakht.ir/startpay/" + transID,
+		Authority:  transID,
+	}, nil
 }
 
 func (a *AqayePardakhtGateway) CreatePayment(ctx context.Context, amount int, orderID, description, callbackURL string) (*PaymentResult, error) {

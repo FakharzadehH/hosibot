@@ -54,35 +54,3 @@ func (u *unsupportedPanelClient) GetSubscriptionLink(ctx context.Context, userna
 	return "", u.err()
 }
 func (u *unsupportedPanelClient) PanelType() string { return u.panelType }
-
-func NewXUIClient(baseURL, username, password string) PanelClient {
-	return newUnsupportedPanelClient("x-ui_single")
-}
-
-func NewHiddifyClient(baseURL, username, password string) PanelClient {
-	return newUnsupportedPanelClient("hiddify")
-}
-
-func NewMarzneshinClient(baseURL, username, password string) PanelClient {
-	return newUnsupportedPanelClient("marzneshin")
-}
-
-func NewWGDashboardClient(baseURL, username, password string) PanelClient {
-	return newUnsupportedPanelClient("wgdashboard")
-}
-
-func NewSUIClient(baseURL, username, password string) PanelClient {
-	return newUnsupportedPanelClient("s_ui")
-}
-
-func NewMikrotikClient(baseURL, username, password string) PanelClient {
-	return newUnsupportedPanelClient("mikrotik")
-}
-
-func NewIBSngClient(baseURL, username, password string) PanelClient {
-	return newUnsupportedPanelClient("ibsng")
-}
-
-func NewAlirezaSingleClient(baseURL, username, password string) PanelClient {
-	return newUnsupportedPanelClient("alireza_single")
-}
