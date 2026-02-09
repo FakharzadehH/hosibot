@@ -173,6 +173,43 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// LoadDatabaseOnly reads only DB config and validates DB fields required for schema bootstrap.
+func LoadDatabaseOnly() (*DatabaseConfig, error) {
+	loadEnvFiles()
+	viper.AutomaticEnv()
+
+	viper.SetDefault("DB_HOST", "localhost")
+	viper.SetDefault("DB_PORT", "3306")
+	viper.SetDefault("DB_CHARSET", "utf8mb4")
+
+	db := &DatabaseConfig{
+		Host:    viper.GetString("DB_HOST"),
+		Port:    viper.GetString("DB_PORT"),
+		Name:    viper.GetString("DB_NAME"),
+		User:    viper.GetString("DB_USER"),
+		Pass:    viper.GetString("DB_PASS"),
+		Charset: viper.GetString("DB_CHARSET"),
+	}
+
+	missing := make([]string, 0, 4)
+	if strings.TrimSpace(db.Host) == "" {
+		missing = append(missing, "DB_HOST")
+	}
+	if strings.TrimSpace(db.Port) == "" {
+		missing = append(missing, "DB_PORT")
+	}
+	if strings.TrimSpace(db.Name) == "" {
+		missing = append(missing, "DB_NAME")
+	}
+	if strings.TrimSpace(db.User) == "" {
+		missing = append(missing, "DB_USER")
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("missing required environment variables for db bootstrap: %s", strings.Join(missing, ", "))
+	}
+	return db, nil
+}
+
 func loadEnvFiles() {
 	candidates := []string{
 		".env",
