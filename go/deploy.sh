@@ -346,23 +346,39 @@ bootstrap_database() {
   fi
 
   if [[ -z "$mysql_bin" ]]; then
-    error "Neither mysql nor mariadb client command is installed."
-    pause
-    return
+    warn "Neither mysql nor mariadb client command is installed. Installing DB packages first."
+    install_mysql_stack
+    start_mysql_service
+    if command -v mysql >/dev/null 2>&1; then
+      mysql_bin="mysql"
+    elif command -v mariadb >/dev/null 2>&1; then
+      mysql_bin="mariadb"
+    else
+      error "MySQL/MariaDB client still missing after install attempt."
+      pause
+      return
+    fi
   fi
+  start_mysql_service
 
-  local db_host db_port db_name db_user db_pass db_charset
+  local db_host db_port db_name db_user db_pass db_charset root_bootstrap_pass
   db_host="${DB_HOST:-localhost}"
   db_port="${DB_PORT:-3306}"
   db_name="${DB_NAME:-}"
   db_user="${DB_USER:-}"
   db_pass="${DB_PASS:-}"
   db_charset="${DB_CHARSET:-utf8mb4}"
+  root_bootstrap_pass="${MYSQL_ROOT_PASSWORD:-${DB_ROOT_PASS:-}}"
 
   if [[ -z "$db_name" || -z "$db_user" ]]; then
     error "DB_NAME and DB_USER must be set in $ENV_FILE before bootstrapping."
     pause
     return
+  fi
+  if [[ "$db_user" == "root" && -z "$db_pass" ]]; then
+    db_pass="$(random_secret)"
+    set_env_value "DB_PASS" "$db_pass"
+    success "DB_USER is root and DB_PASS was empty. Generated and saved DB_PASS in $ENV_FILE."
   fi
 
   local db_name_esc db_user_esc db_pass_esc db_charset_esc
@@ -371,8 +387,19 @@ bootstrap_database() {
   db_pass_esc="$(escape_sql_string "$db_pass")"
   db_charset_esc="$(escape_sql_ident "$db_charset")"
 
-  local create_db_sql
+  local create_db_sql admin_sql
   create_db_sql="CREATE DATABASE IF NOT EXISTS \`$db_name_esc\` CHARACTER SET $db_charset_esc;"
+  admin_sql="$create_db_sql"$'\n'
+  admin_sql+="CREATE USER IF NOT EXISTS '$db_user_esc'@'localhost' IDENTIFIED BY '$db_pass_esc';"$'\n'
+  admin_sql+="CREATE USER IF NOT EXISTS '$db_user_esc'@'127.0.0.1' IDENTIFIED BY '$db_pass_esc';"$'\n'
+  admin_sql+="CREATE USER IF NOT EXISTS '$db_user_esc'@'%' IDENTIFIED BY '$db_pass_esc';"$'\n'
+  admin_sql+="ALTER USER '$db_user_esc'@'localhost' IDENTIFIED BY '$db_pass_esc';"$'\n'
+  admin_sql+="ALTER USER '$db_user_esc'@'127.0.0.1' IDENTIFIED BY '$db_pass_esc';"$'\n'
+  admin_sql+="ALTER USER '$db_user_esc'@'%' IDENTIFIED BY '$db_pass_esc';"$'\n'
+  admin_sql+="GRANT ALL PRIVILEGES ON \`$db_name_esc\`.* TO '$db_user_esc'@'localhost';"$'\n'
+  admin_sql+="GRANT ALL PRIVILEGES ON \`$db_name_esc\`.* TO '$db_user_esc'@'127.0.0.1';"$'\n'
+  admin_sql+="GRANT ALL PRIVILEGES ON \`$db_name_esc\`.* TO '$db_user_esc'@'%';"$'\n'
+  admin_sql+="FLUSH PRIVILEGES;"
 
   info "Bootstrapping database using current .env credentials"
   info "Target DB: $db_name | User: $db_user | Host: $db_host:$db_port"
@@ -392,25 +419,13 @@ bootstrap_database() {
   fi
 
   local bootstrap_ok=0
-  if [[ "$db_user" == "root" ]]; then
-    if run_root "$mysql_bin" --protocol=socket -e "$create_db_sql" >/dev/null 2>&1; then
+  if run_root "$mysql_bin" --protocol=socket -e "$admin_sql" >/dev/null 2>&1; then
+    bootstrap_ok=1
+    success "Database and grants bootstrapped for '$db_user' via local socket admin."
+  elif [[ -n "$root_bootstrap_pass" ]]; then
+    if run_root env MYSQL_PWD="$root_bootstrap_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u root -e "$admin_sql" >/dev/null 2>&1; then
       bootstrap_ok=1
-      success "Database '$db_name' created/verified with local root admin."
-    fi
-  else
-    local admin_sql
-    admin_sql="$create_db_sql"$'\n'
-    admin_sql+="CREATE USER IF NOT EXISTS '$db_user_esc'@'localhost' IDENTIFIED BY '$db_pass_esc';"$'\n'
-    admin_sql+="CREATE USER IF NOT EXISTS '$db_user_esc'@'%' IDENTIFIED BY '$db_pass_esc';"$'\n'
-    admin_sql+="ALTER USER '$db_user_esc'@'localhost' IDENTIFIED BY '$db_pass_esc';"$'\n'
-    admin_sql+="ALTER USER '$db_user_esc'@'%' IDENTIFIED BY '$db_pass_esc';"$'\n'
-    admin_sql+="GRANT ALL PRIVILEGES ON \`$db_name_esc\`.* TO '$db_user_esc'@'localhost';"$'\n'
-    admin_sql+="GRANT ALL PRIVILEGES ON \`$db_name_esc\`.* TO '$db_user_esc'@'%';"$'\n'
-    admin_sql+="FLUSH PRIVILEGES;"
-
-    if run_root "$mysql_bin" --protocol=socket -e "$admin_sql" >/dev/null 2>&1; then
-      bootstrap_ok=1
-      success "Database and grants bootstrapped for '$db_user'."
+      success "Database and grants bootstrapped for '$db_user' via root password auth."
     fi
   fi
 
@@ -500,8 +515,8 @@ configure_env_wizard() {
   db_host="${DB_HOST:-localhost}"
   db_port="${DB_PORT:-3306}"
   db_name="${DB_NAME:-hosibot}"
-  db_user="${DB_USER:-root}"
-  db_pass="${DB_PASS:-}"
+  db_user="${DB_USER:-hosibot}"
+  db_pass="${DB_PASS:-$(random_secret)}"
   db_charset="${DB_CHARSET:-utf8mb4}"
   redis_addr="${REDIS_ADDR:-localhost:6379}"
   redis_pass="${REDIS_PASS:-}"
