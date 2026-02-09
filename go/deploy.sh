@@ -12,6 +12,7 @@ PID_FILE="$RUNTIME_DIR/hosibot.pid"
 SERVICE_NAME="${SERVICE_NAME:-hosibot.service}"
 RELEASE_REPO="${RELEASE_REPO:-FakharzadehH/hosibot}"
 RELEASE_API_URL="${RELEASE_API_URL:-https://api.github.com/repos/${RELEASE_REPO}/releases/latest}"
+APP_NAME="Hosibot"
 
 # Colors
 C_RESET='\033[0m'
@@ -113,7 +114,7 @@ set_env_value() {
 get_env_value() {
   local key="$1"
   if [[ -f "$ENV_FILE" ]]; then
-    grep -E "^${key}=" "$ENV_FILE" | tail -n1 | cut -d'=' -f2-
+    grep -E "^${key}=" "$ENV_FILE" | tail -n1 | cut -d'=' -f2- || true
   fi
 }
 
@@ -142,6 +143,15 @@ normalize_domain() {
     d="https://$d"
   fi
   printf "%s" "$d"
+}
+
+extract_domain() {
+  local value="${1:-}"
+  value="${value#http://}"
+  value="${value#https://}"
+  value="${value%%/*}"
+  value="${value%%:*}"
+  printf "%s" "$value"
 }
 
 escape_sql_string() {
@@ -195,6 +205,71 @@ print_service_status() {
     fi
   else
     printf "%b\n" "Systemd service:   ${C_YELLOW}systemctl not found${C_RESET}"
+  fi
+}
+
+service_unit_exists() {
+  if ! command -v systemctl >/dev/null 2>&1; then
+    return 1
+  fi
+  systemctl list-unit-files | awk '{print $1}' | grep -qx "$SERVICE_NAME"
+}
+
+print_installation_status() {
+  local install_state="${C_RED}NOT INSTALLED${C_RESET}"
+  if [[ -x "$BIN_PATH" ]]; then
+    install_state="${C_YELLOW}PARTIAL${C_RESET} (binary present)"
+  fi
+  if service_unit_exists; then
+    install_state="${C_GREEN}INSTALLED${C_RESET}"
+    if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+      install_state="${C_GREEN}INSTALLED/RUNNING${C_RESET}"
+    else
+      install_state="${C_YELLOW}INSTALLED/STOPPED${C_RESET}"
+    fi
+  fi
+  printf "%b\n" "Installation:      $install_state"
+}
+
+check_ssl_status() {
+  local bot_domain bot_webhook domain cert_path expiry_date current_ts expiry_ts days_left
+  bot_domain="${BOT_DOMAIN:-$(get_env_value BOT_DOMAIN)}"
+  bot_webhook="${BOT_WEBHOOK_URL:-$(get_env_value BOT_WEBHOOK_URL)}"
+
+  domain="$(extract_domain "$bot_domain")"
+  if [[ -z "$domain" ]]; then
+    domain="$(extract_domain "$bot_webhook")"
+  fi
+
+  if [[ -z "$domain" ]]; then
+    printf "%b\n" "SSL certificate:   ${C_YELLOW}UNKNOWN${C_RESET} (set BOT_DOMAIN or BOT_WEBHOOK_URL)"
+    return
+  fi
+
+  cert_path="/etc/letsencrypt/live/$domain/cert.pem"
+  if [[ ! -f "$cert_path" ]]; then
+    printf "%b\n" "SSL certificate:   ${C_YELLOW}NOT FOUND${C_RESET} ($domain)"
+    return
+  fi
+
+  expiry_date="$(openssl x509 -enddate -noout -in "$cert_path" 2>/dev/null | cut -d= -f2- || true)"
+  if [[ -z "$expiry_date" ]]; then
+    printf "%b\n" "SSL certificate:   ${C_YELLOW}UNREADABLE${C_RESET} ($domain)"
+    return
+  fi
+
+  current_ts="$(date +%s)"
+  expiry_ts="$(date -d "$expiry_date" +%s 2>/dev/null || true)"
+  if [[ -z "$expiry_ts" ]]; then
+    printf "%b\n" "SSL certificate:   ${C_YELLOW}UNREADABLE${C_RESET} ($domain)"
+    return
+  fi
+
+  days_left=$(( (expiry_ts - current_ts) / 86400 ))
+  if (( days_left >= 0 )); then
+    printf "%b\n" "SSL certificate:   ${C_GREEN}VALID${C_RESET} (${days_left} days left, $domain)"
+  else
+    printf "%b\n" "SSL certificate:   ${C_RED}EXPIRED${C_RESET} (${days_left} days, $domain)"
   fi
 }
 
@@ -433,16 +508,64 @@ bootstrap_database() {
     warn "Local admin bootstrap failed or was unavailable. Continuing with credential-based verification."
   fi
 
+  local verify_ok=0
   if [[ -n "$db_pass" ]]; then
     if MYSQL_PWD="$db_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u "$db_user" -D "$db_name" -e "SELECT 1;" >/dev/null 2>&1; then
+      verify_ok=1
       success "Database connection test passed with DB_USER/DB_PASS."
-    else
-      error "Database connection test failed for DB_USER/DB_PASS."
-      warn "Check DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS in $ENV_FILE and MySQL auth settings."
     fi
   else
     if "$mysql_bin" -h "$db_host" -P "$db_port" -u "$db_user" -D "$db_name" -e "SELECT 1;" >/dev/null 2>&1; then
+      verify_ok=1
       success "Database connection test passed with DB_USER (no password)."
+    fi
+  fi
+
+  if [[ "$verify_ok" -eq 0 && "$db_user" == "root" ]]; then
+    warn "Root user auth failed over TCP. Creating a dedicated app DB user and updating .env."
+
+    local app_db_user app_db_pass app_db_user_esc app_db_pass_esc app_sql
+    app_db_user="${APP_DB_USER:-hosibot}"
+    if [[ "$app_db_user" == "root" ]]; then
+      app_db_user="hosibot_app"
+    fi
+    app_db_pass="$(random_secret)"
+    app_db_user_esc="$(escape_sql_string "$app_db_user")"
+    app_db_pass_esc="$(escape_sql_string "$app_db_pass")"
+
+    app_sql="CREATE USER IF NOT EXISTS '$app_db_user_esc'@'localhost' IDENTIFIED BY '$app_db_pass_esc';"$'\n'
+    app_sql+="CREATE USER IF NOT EXISTS '$app_db_user_esc'@'127.0.0.1' IDENTIFIED BY '$app_db_pass_esc';"$'\n'
+    app_sql+="CREATE USER IF NOT EXISTS '$app_db_user_esc'@'%' IDENTIFIED BY '$app_db_pass_esc';"$'\n'
+    app_sql+="ALTER USER '$app_db_user_esc'@'localhost' IDENTIFIED BY '$app_db_pass_esc';"$'\n'
+    app_sql+="ALTER USER '$app_db_user_esc'@'127.0.0.1' IDENTIFIED BY '$app_db_pass_esc';"$'\n'
+    app_sql+="ALTER USER '$app_db_user_esc'@'%' IDENTIFIED BY '$app_db_pass_esc';"$'\n'
+    app_sql+="GRANT ALL PRIVILEGES ON \`$db_name_esc\`.* TO '$app_db_user_esc'@'localhost';"$'\n'
+    app_sql+="GRANT ALL PRIVILEGES ON \`$db_name_esc\`.* TO '$app_db_user_esc'@'127.0.0.1';"$'\n'
+    app_sql+="GRANT ALL PRIVILEGES ON \`$db_name_esc\`.* TO '$app_db_user_esc'@'%';"$'\n'
+    app_sql+="FLUSH PRIVILEGES;"
+
+    local app_bootstrap_ok=0
+    if run_root "$mysql_bin" --protocol=socket -e "$app_sql" >/dev/null 2>&1; then
+      app_bootstrap_ok=1
+    elif [[ -n "$root_bootstrap_pass" ]]; then
+      if run_root env MYSQL_PWD="$root_bootstrap_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u root -e "$app_sql" >/dev/null 2>&1; then
+        app_bootstrap_ok=1
+      fi
+    fi
+
+    if [[ "$app_bootstrap_ok" -eq 1 ]] && MYSQL_PWD="$app_db_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u "$app_db_user" -D "$db_name" -e "SELECT 1;" >/dev/null 2>&1; then
+      set_env_value "DB_USER" "$app_db_user"
+      set_env_value "DB_PASS" "$app_db_pass"
+      success "Switched DB credentials to dedicated app user '$app_db_user' in $ENV_FILE."
+      success "Database connection test passed with dedicated app user."
+      verify_ok=1
+    fi
+  fi
+
+  if [[ "$verify_ok" -eq 0 ]]; then
+    if [[ -n "$db_pass" ]]; then
+      error "Database connection test failed for DB_USER/DB_PASS."
+      warn "Check DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS in $ENV_FILE and MySQL auth settings."
     else
       error "Database connection test failed for DB_USER with empty password."
       warn "Set DB_PASS in $ENV_FILE if your MySQL user requires a password."
@@ -1095,6 +1218,149 @@ backup_env() {
   pause
 }
 
+update_hosibot() {
+  banner
+  ensure_env_file
+  info "Updating $APP_NAME using latest GitHub release"
+
+  local stamp backup
+  stamp="$(date +%Y%m%d_%H%M%S)"
+  backup="$SCRIPT_DIR/.env.backup.$stamp"
+  cp "$ENV_FILE" "$backup"
+  success "Backed up .env to $backup"
+
+  build_binary
+
+  if service_unit_exists; then
+    info "Restarting systemd service $SERVICE_NAME"
+    service_action restart || true
+    print_service_status
+  else
+    warn "Systemd service is not installed. Install it from menu option 'Systemd service manager'."
+  fi
+
+  if confirm "Run health check now?" "Y"; then
+    health_check
+    return
+  fi
+
+  pause
+}
+
+drop_database_and_user() {
+  load_env
+
+  local db_name db_user db_pass db_host db_port root_bootstrap_pass mysql_bin db_name_esc db_user_esc
+  db_name="${DB_NAME:-}"
+  db_user="${DB_USER:-}"
+  db_pass="${DB_PASS:-}"
+  db_host="${DB_HOST:-localhost}"
+  db_port="${DB_PORT:-3306}"
+  root_bootstrap_pass="${MYSQL_ROOT_PASSWORD:-${DB_ROOT_PASS:-}}"
+
+  if [[ -z "$db_name" || -z "$db_user" ]]; then
+    warn "DB_NAME/DB_USER missing in $ENV_FILE. Skipping DB cleanup."
+    return
+  fi
+
+  mysql_bin=""
+  if command -v mysql >/dev/null 2>&1; then
+    mysql_bin="mysql"
+  elif command -v mariadb >/dev/null 2>&1; then
+    mysql_bin="mariadb"
+  fi
+
+  if [[ -z "$mysql_bin" ]]; then
+    warn "mysql/mariadb client not found. Skipping DB cleanup."
+    return
+  fi
+
+  db_name_esc="$(escape_sql_ident "$db_name")"
+  db_user_esc="$(escape_sql_string "$db_user")"
+  local drop_sql
+  drop_sql="DROP DATABASE IF EXISTS \`$db_name_esc\`;"$'\n'
+  drop_sql+="DROP USER IF EXISTS '$db_user_esc'@'localhost';"$'\n'
+  drop_sql+="DROP USER IF EXISTS '$db_user_esc'@'127.0.0.1';"$'\n'
+  drop_sql+="DROP USER IF EXISTS '$db_user_esc'@'%';"$'\n'
+  drop_sql+="FLUSH PRIVILEGES;"
+
+  if run_root "$mysql_bin" --protocol=socket -e "$drop_sql" >/dev/null 2>&1; then
+    success "Dropped database '$db_name' and user '$db_user' via local socket admin."
+    return
+  fi
+
+  if [[ -n "$root_bootstrap_pass" ]]; then
+    if run_root env MYSQL_PWD="$root_bootstrap_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u root -e "$drop_sql" >/dev/null 2>&1; then
+      success "Dropped database '$db_name' and user '$db_user' via root password auth."
+      return
+    fi
+  fi
+
+  if [[ -n "$db_pass" ]] && MYSQL_PWD="$db_pass" "$mysql_bin" -h "$db_host" -P "$db_port" -u "$db_user" -e "DROP DATABASE IF EXISTS \`$db_name_esc\`;" >/dev/null 2>&1; then
+    success "Dropped database '$db_name' using app credentials."
+    warn "Could not ensure DB user cleanup with app credentials."
+    return
+  fi
+
+  warn "Database cleanup failed. You can remove DB/user manually from MySQL."
+}
+
+remove_hosibot() {
+  banner
+  info "This removes $APP_NAME runtime files and service configuration."
+  if ! confirm "Continue with removal?" "N"; then
+    warn "Removal canceled."
+    pause
+    return
+  fi
+
+  local pid
+  if [[ -f "$PID_FILE" ]]; then
+    pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+      kill "$pid" || true
+      sleep 1
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        kill -9 "$pid" || true
+      fi
+      success "Stopped background process (pid $pid)"
+    fi
+    rm -f "$PID_FILE"
+  fi
+
+  if service_unit_exists; then
+    run_root systemctl disable --now "$SERVICE_NAME" || true
+    run_root rm -f "/etc/systemd/system/$SERVICE_NAME"
+    run_root systemctl daemon-reload || true
+    success "Removed systemd service: $SERVICE_NAME"
+  else
+    warn "Systemd service not found: $SERVICE_NAME"
+  fi
+
+  rm -f "$BIN_PATH"
+  rm -f "$LOG_FILE"
+  rmdir "$BIN_DIR" 2>/dev/null || true
+  rmdir "$RUNTIME_DIR" 2>/dev/null || true
+  success "Removed local binary and runtime files."
+
+  if confirm "Also remove database and DB user from MySQL?" "N"; then
+    drop_database_and_user
+  fi
+
+  if confirm "Also remove $ENV_FILE ?" "N"; then
+    rm -f "$ENV_FILE"
+    success "Removed $ENV_FILE"
+  fi
+
+  pause
+}
+
+install_hosibot() {
+  banner
+  info "Installing $APP_NAME (Go version)"
+  quick_deploy
+}
+
 quick_deploy() {
   banner
   info "Quick deploy sequence"
@@ -1213,38 +1479,46 @@ main_menu() {
   ensure_dirs
   while true; do
     banner
+    print_installation_status
     print_runtime_status
     print_service_status
+    check_ssl_status
     line
     cat <<MENU
-1) Quick deploy (recommended)
-2) Configure .env wizard
-3) Install dependencies
-4) Download latest release binary
-5) Run in foreground
-6) Background process manager
-7) Systemd service manager
-8) Telegram webhook manager
-9) Diagnostics / health check
-10) Bootstrap database (DB_NAME/DB_USER/DB_PASS)
-11) Backup .env
-12) Exit
+1) Install Hosibot (full setup)
+2) Update Hosibot
+3) Remove Hosibot
+4) Quick deploy (guided)
+5) Configure .env wizard
+6) Install dependencies
+7) Download latest release binary
+8) Run in foreground
+9) Background process manager
+10) Systemd service manager
+11) Telegram webhook manager
+12) Diagnostics / health check
+13) Bootstrap database (DB_NAME/DB_USER/DB_PASS)
+14) Backup .env
+15) Exit
 MENU
 
     read -r -p "Select: " choice
     case "$choice" in
-      1) quick_deploy ;;
-      2) configure_env_wizard ;;
-      3) install_dependencies ;;
-      4) build_binary ;;
-      5) run_foreground ;;
-      6) background_menu ;;
-      7) service_menu ;;
-      8) telegram_menu ;;
-      9) health_check ;;
-      10) bootstrap_database ;;
-      11) backup_env ;;
-      12) exit 0 ;;
+      1) install_hosibot ;;
+      2) update_hosibot ;;
+      3) remove_hosibot ;;
+      4) quick_deploy ;;
+      5) configure_env_wizard ;;
+      6) install_dependencies ;;
+      7) build_binary ;;
+      8) run_foreground ;;
+      9) background_menu ;;
+      10) service_menu ;;
+      11) telegram_menu ;;
+      12) health_check ;;
+      13) bootstrap_database ;;
+      14) backup_env ;;
+      15) exit 0 ;;
       *) warn "Invalid choice"; pause ;;
     esac
   done
@@ -1256,6 +1530,9 @@ Usage: $(basename "$0") [option]
 
 Options:
   --menu           Open interactive menu (default)
+  --install        Full install flow (dependencies/env/db/binary/service/webhook)
+  --update         Update binary to latest release and restart service
+  --remove         Remove Hosibot service/binary/runtime (optional DB/.env cleanup)
   --quick-deploy   Run quick deploy flow
   --build          Download latest release binary
   --bootstrap-db   Create DB/user/grants from .env and verify connection
@@ -1267,6 +1544,9 @@ USAGE
 
 case "${1:---menu}" in
   --menu) main_menu ;;
+  --install) install_hosibot ;;
+  --update) update_hosibot ;;
+  --remove) remove_hosibot ;;
   --quick-deploy) quick_deploy ;;
   --build) build_binary ;;
   --bootstrap-db) bootstrap_database ;;
