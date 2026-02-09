@@ -79,6 +79,7 @@ func main() {
 		Payment: repository.NewPaymentRepository(db),
 		Panel:   repository.NewPanelRepository(db),
 		Setting: repository.NewSettingRepository(db),
+		CronJob: repository.NewCronJobRepository(db),
 	}
 	teleBot, err := bot.New(cfg, botRepos, botAPI, logger)
 	if err != nil {

@@ -102,6 +102,13 @@ func (r *PanelRepository) FindByName(name string) (*models.Panel, error) {
 	return &panel, nil
 }
 
+// CountByName returns number of panels with the same name.
+func (r *PanelRepository) CountByName(name string) (int64, error) {
+	var count int64
+	err := r.db.Model(&models.Panel{}).Where("name_panel = ?", name).Count(&count).Error
+	return count, err
+}
+
 // IncrementCounter increments the counter_panel (stored in conecton column) for a panel.
 func (r *PanelRepository) IncrementCounter(code string) error {
 	return r.db.Model(&models.Panel{}).Where("code_panel = ?", code).

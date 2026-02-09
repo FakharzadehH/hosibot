@@ -46,6 +46,7 @@ type BotRepos struct {
 	Payment *repository.PaymentRepository
 	Panel   *repository.PanelRepository
 	Setting *repository.SettingRepository
+	CronJob *repository.CronJobRepository
 }
 
 // New creates and configures a new Bot instance.
@@ -215,6 +216,11 @@ func (b *Bot) handleText(c tele.Context) error {
 
 	text := c.Message().Text
 
+	// Admin menu actions should be reachable regardless of current step.
+	if handled, err := b.handleAdminMainMenuAction(c, user, text); handled {
+		return err
+	}
+
 	switch user.Step {
 	case "none":
 		return b.handleMainMenu(c, user, text)
@@ -238,6 +244,154 @@ func (b *Bot) handleText(c tele.Context) error {
 		return b.handleDiscountCode(c, user, text)
 	case "get_number":
 		return c.Send("لطفاً شماره تماس خود را با دکمه زیر ارسال کنید.")
+	case "admin_search_user":
+		return b.handleAdminSearchUserInput(c, user, text)
+	case "admin_balance_add_amount":
+		return b.handleAdminBalanceAmountInput(c, user, text, false)
+	case "admin_balance_sub_amount":
+		return b.handleAdminBalanceAmountInput(c, user, text, true)
+	case "admin_user_set_discount":
+		return b.handleAdminUserDiscountInput(c, user, text)
+	case "admin_user_send_message":
+		return b.handleAdminUserMessageInput(c, user, text)
+	case "admin_user_set_maxbuy":
+		return b.handleAdminUserMaxBuyInput(c, user, text)
+	case "admin_user_set_expire_days":
+		return b.handleAdminUserExpireDaysInput(c, user, text)
+	case "admin_user_set_limittest":
+		return b.handleAdminUserLimitTestInput(c, user, text)
+	case "admin_user_set_changeloc_limit":
+		return b.handleAdminUserChangeLocLimitInput(c, user, text)
+	case "admin_user_transfer_id":
+		return b.handleAdminUserTransferInput(c, user, text)
+	case "admin_user_agentbot_token":
+		return b.handleAdminUserAgentBotTokenInput(c, user, text)
+	case "admin_user_agentbot_price_volume":
+		return b.handleAdminUserAgentBotPriceVolumeInput(c, user, text)
+	case "admin_user_agentbot_price_time":
+		return b.handleAdminUserAgentBotPriceTimeInput(c, user, text)
+	case "admin_user_manualorder_username":
+		return b.handleAdminUserManualOrderUsernameInput(c, user, text)
+	case "admin_add_admin_id":
+		return b.handleAdminAddAdminIDInput(c, user, text)
+	case "admin_add_admin_role":
+		return b.handleAdminAddAdminRoleInput(c, user, text)
+	case "admin_add_panel_name":
+		return b.handleAdminAddPanelNameInput(c, user, text)
+	case "admin_add_panel_url":
+		return b.handleAdminAddPanelURLInput(c, user, text)
+	case "admin_add_panel_username":
+		return b.handleAdminAddPanelUsernameInput(c, user, text)
+	case "admin_add_panel_password":
+		return b.handleAdminAddPanelPasswordInput(c, user, text)
+	case "admin_add_panel_limit":
+		return b.handleAdminAddPanelLimitInput(c, user, text)
+	case "admin_panel_edit_name":
+		return b.handleAdminPanelEditNameInput(c, user, text)
+	case "admin_panel_edit_url":
+		return b.handleAdminPanelEditURLInput(c, user, text)
+	case "admin_panel_set_inbound":
+		return b.handleAdminPanelSetInboundInput(c, user, text)
+	case "admin_panel_set_subdomain":
+		return b.handleAdminPanelSetSubdomainInput(c, user, text)
+	case "admin_panel_set_method":
+		return b.handleAdminPanelSetMethodInput(c, user, text)
+	case "admin_panel_set_namecustom":
+		return b.handleAdminPanelSetNameCustomInput(c, user, text)
+	case "admin_panel_set_test_time":
+		return b.handleAdminPanelSetTestTimeInput(c, user, text)
+	case "admin_panel_set_test_volume":
+		return b.handleAdminPanelSetTestVolumeInput(c, user, text)
+	case "admin_channel_add_name":
+		return b.handleAdminChannelAddNameInput(c, user, text)
+	case "admin_channel_add_join":
+		return b.handleAdminChannelAddJoinInput(c, user, text)
+	case "admin_channel_add_link":
+		return b.handleAdminChannelAddLinkInput(c, user, text)
+	case "admin_text_set_value":
+		return b.handleAdminTextSetValueInput(c, user, text)
+	case "admin_help_add_name":
+		return b.handleAdminHelpAddNameInput(c, user, text)
+	case "admin_help_add_desc":
+		return b.handleAdminHelpAddDescInput(c, user, text)
+	case "admin_broadcast_text":
+		return b.handleAdminBroadcastTextInput(c, user, text)
+	case "admin_broadcast_inactive_days":
+		return b.handleAdminBroadcastInactiveDaysInput(c, user, text)
+	case "admin_set_report_channel":
+		return b.handleAdminSetReportChannelInput(c, user, text)
+	case "admin_app_add_name":
+		return b.handleAdminAppAddNameInput(c, user, text)
+	case "admin_app_add_link":
+		return b.handleAdminAppAddLinkInput(c, user, text)
+	case "admin_app_edit_name":
+		return b.handleAdminAppEditNameInput(c, user, text)
+	case "admin_app_edit_link":
+		return b.handleAdminAppEditLinkInput(c, user, text)
+	case "admin_app_remove_name":
+		return b.handleAdminAppRemoveNameInput(c, user, text)
+	case "admin_finance_card_add":
+		return b.handleAdminFinanceCardAddInput(c, user, text)
+	case "admin_finance_card_remove":
+		return b.handleAdminFinanceCardRemoveInput(c, user, text)
+	case "admin_finance_pay_value":
+		return b.handleAdminFinancePaySettingInput(c, user, text)
+	case "admin_support_set_id":
+		return b.handleAdminSupportIDInput(c, user, text)
+	case "admin_support_set_text":
+		return b.handleAdminSupportTextInput(c, user, text)
+	case "admin_support_dept_add_name":
+		return b.handleAdminSupportDeptAddNameInput(c, user, text)
+	case "admin_support_dept_add_id":
+		return b.handleAdminSupportDeptAddIDInput(c, user, text)
+	case "admin_shop_product_add_name":
+		return b.handleAdminShopProductAddNameInput(c, user, text)
+	case "admin_shop_product_add_agent":
+		return b.handleAdminShopProductAddAgentInput(c, user, text)
+	case "admin_shop_product_add_location":
+		return b.handleAdminShopProductAddLocationInput(c, user, text)
+	case "admin_shop_product_add_category":
+		return b.handleAdminShopProductAddCategoryInput(c, user, text)
+	case "admin_shop_product_add_volume":
+		return b.handleAdminShopProductAddVolumeInput(c, user, text)
+	case "admin_shop_product_add_time":
+		return b.handleAdminShopProductAddTimeInput(c, user, text)
+	case "admin_shop_product_add_price":
+		return b.handleAdminShopProductAddPriceInput(c, user, text)
+	case "admin_shop_product_add_reset":
+		return b.handleAdminShopProductAddResetInput(c, user, text)
+	case "admin_shop_product_add_note":
+		return b.handleAdminShopProductAddNoteInput(c, user, text)
+	case "admin_shop_product_delete_id":
+		return b.handleAdminShopProductDeleteIDInput(c, user, text)
+	case "admin_shop_product_edit_id":
+		return b.handleAdminShopProductEditIDInput(c, user, text)
+	case "admin_shop_product_edit_field":
+		return b.handleAdminShopProductEditFieldInput(c, user, text)
+	case "admin_shop_product_edit_value":
+		return b.handleAdminShopProductEditValueInput(c, user, text)
+	case "admin_shop_category_add_name":
+		return b.handleAdminShopCategoryAddNameInput(c, user, text)
+	case "admin_shop_category_delete_id":
+		return b.handleAdminShopCategoryDeleteIDInput(c, user, text)
+	case "admin_shop_gift_add_code":
+		return b.handleAdminShopGiftAddCodeInput(c, user, text)
+	case "admin_shop_gift_add_amount":
+		return b.handleAdminShopGiftAddAmountInput(c, user, text)
+	case "admin_shop_gift_add_limit":
+		return b.handleAdminShopGiftAddLimitInput(c, user, text)
+	case "admin_shop_gift_delete_code":
+		return b.handleAdminShopGiftDeleteCodeInput(c, user, text)
+	case "admin_shop_discount_add_code":
+		return b.handleAdminShopDiscountAddCodeInput(c, user, text)
+	case "admin_shop_discount_add_percent":
+		return b.handleAdminShopDiscountAddPercentInput(c, user, text)
+	case "admin_shop_discount_add_limit":
+		return b.handleAdminShopDiscountAddLimitInput(c, user, text)
+	case "admin_shop_discount_delete_code":
+		return b.handleAdminShopDiscountDeleteCodeInput(c, user, text)
+	case "admin_payment_reject_reason":
+		return b.handleAdminPaymentRejectReasonInput(c, user, text)
 	default:
 		if strings.HasPrefix(user.Step, "extend_") {
 			return b.handleExtendService(c, user, text)
@@ -292,7 +446,44 @@ func (b *Bot) handleCallback(c tele.Context) error {
 		_ = b.repos.User.UpdateStep(chatID, "none")
 		return b.sendMainMenu(c, chatID)
 	case data == "admin_panel":
-		return c.Send("لطفاً از پنل وب مدیریت استفاده کنید.")
+		return b.sendAdminMenu(c, chatID)
+	case data == "hide_mini_app_instruction":
+		return b.handleHideMiniAppInstruction(c, user)
+	case strings.HasPrefix(data, "admin_user_"):
+		return b.handleAdminUserCallback(c, user, data)
+	case strings.HasPrefix(data, "admin_add_panel_type_"),
+		data == "admin_panel_manage",
+		data == "admin_panel_list",
+		strings.HasPrefix(data, "admin_panel_open_"),
+		strings.HasPrefix(data, "admin_panel_toggle_"),
+		strings.HasPrefix(data, "admin_panel_delete_"),
+		strings.HasPrefix(data, "admin_panel_edit_name_"),
+		strings.HasPrefix(data, "admin_panel_edit_url_"),
+		strings.HasPrefix(data, "admin_panel_set_inbound_"),
+		strings.HasPrefix(data, "admin_panel_set_subdomain_"),
+		strings.HasPrefix(data, "admin_panel_set_method_"),
+		strings.HasPrefix(data, "admin_panel_set_test_time_"),
+		strings.HasPrefix(data, "admin_panel_set_test_volume_"):
+		return b.handleAdminPanelCallback(c, user, data)
+	case data == "admin_admin_manage",
+		strings.HasPrefix(data, "admin_admin_del_"):
+		return b.handleAdminAdminCallback(c, user, data)
+	case data == "admin_support_manage",
+		strings.HasPrefix(data, "admin_support_dept_del_"):
+		return b.handleAdminSupportCallback(c, user, data)
+	case data == "admin_channel_manage",
+		strings.HasPrefix(data, "admin_channel_rm_"):
+		return b.handleAdminChannelCallback(c, user, data)
+	case data == "admin_text_manage",
+		data == "admin_text_noop",
+		strings.HasPrefix(data, "admin_text_list_"),
+		strings.HasPrefix(data, "admin_text_pick_"):
+		return b.handleAdminTextCallback(c, user, data)
+	case data == "admin_help_manage",
+		strings.HasPrefix(data, "admin_help_del_"):
+		return b.handleAdminHelpCallback(c, user, data)
+	case strings.HasPrefix(data, "admin_feature_toggle_"):
+		return b.handleAdminFeatureCallback(c, user, data)
 
 	case data == "buy_service" || data == "buy":
 		_ = b.repos.User.UpdateStep(chatID, "buy_service")
@@ -490,7 +681,11 @@ func (b *Bot) handleMainMenu(c tele.Context, user *models.User, text string) err
 	case matchText(text, accountText, "حساب", "account", "👤"):
 		return b.sendWalletInfo(c, user)
 	case text == "🔧 پنل مدیریت":
-		return c.Send("لطفاً از پنل وب مدیریت استفاده کنید.")
+		handled, err := b.handleAdminMainMenuAction(c, user, text)
+		if handled {
+			return err
+		}
+		return c.Send("⛔ دسترسی به پنل مدیریت ندارید.")
 	default:
 		return b.sendMainMenu(c, user.ID)
 	}
@@ -2018,7 +2213,19 @@ func (b *Bot) handlePaymentReceipt(c tele.Context, user *models.User) error {
 // ── Admin Payment Confirm/Reject ──────────────────────────────────────
 
 func (b *Bot) handleAdminPaymentConfirm(c tele.Context, user *models.User, data string) error {
+	ok, role := b.isAdminWithRole(user.ID)
+	if !ok || strings.EqualFold(role, "support") {
+		return c.Send("⛔ دسترسی ندارید.")
+	}
+
 	orderID := strings.TrimPrefix(data, "confirmpay_")
+	payment, err := b.repos.Payment.FindByOrderID(orderID)
+	if err != nil || payment == nil {
+		return c.Send("❌ تراکنش یافت نشد.")
+	}
+	if strings.EqualFold(strings.TrimSpace(payment.PaymentStatus), "paid") || strings.EqualFold(strings.TrimSpace(payment.PaymentStatus), "reject") {
+		return c.Send("این رسید قبلاً بررسی شده است.")
+	}
 
 	// Update payment status
 	_ = b.repos.Payment.UpdateByOrderID(orderID, map[string]interface{}{
@@ -2033,19 +2240,65 @@ func (b *Bot) handleAdminPaymentConfirm(c tele.Context, user *models.User, data 
 }
 
 func (b *Bot) handleAdminPaymentReject(c tele.Context, user *models.User, data string) error {
-	orderID := strings.TrimPrefix(data, "rejectpay_")
-
-	_ = b.repos.Payment.UpdateByOrderID(orderID, map[string]interface{}{
-		"payment_Status": "rejected",
-		"at_updated":     fmt.Sprintf("%d", time.Now().Unix()),
-	})
-
-	// Notify user
-	payment, _ := b.repos.Payment.FindByOrderID(orderID)
-	if payment != nil {
-		b.botAPI.SendMessage(payment.IDUser, "❌ پرداخت شما تایید نشد. لطفاً با پشتیبانی تماس بگیرید.", nil)
+	ok, role := b.isAdminWithRole(user.ID)
+	if !ok || strings.EqualFold(role, "support") {
+		return c.Send("⛔ دسترسی ندارید.")
 	}
 
+	orderID := strings.TrimPrefix(data, "rejectpay_")
+	payment, err := b.repos.Payment.FindByOrderID(orderID)
+	if err != nil || payment == nil {
+		return c.Send("❌ تراکنش یافت نشد.")
+	}
+	if strings.EqualFold(strings.TrimSpace(payment.PaymentStatus), "paid") || strings.EqualFold(strings.TrimSpace(payment.PaymentStatus), "reject") {
+		return c.Send("این رسید قبلاً بررسی شده است.")
+	}
+
+	_ = b.repos.Payment.UpdateByOrderID(orderID, map[string]interface{}{
+		"payment_Status": "reject",
+		"at_updated":     fmt.Sprintf("%d", time.Now().Unix()),
+	})
+	_ = b.repos.User.Update(user.ID, map[string]interface{}{
+		"Processing_value_one": payment.IDUser,
+		"Processing_value_tow": orderID,
+	})
+	_ = b.repos.User.UpdateStep(user.ID, "admin_payment_reject_reason")
+	return c.Send("دلیل رد پرداخت را ارسال کنید.")
+}
+
+func (b *Bot) handleAdminPaymentRejectReasonInput(c tele.Context, adminUser *models.User, text string) error {
+	ok, role := b.isAdminWithRole(adminUser.ID)
+	if !ok || strings.EqualFold(role, "support") {
+		_ = b.repos.User.UpdateStep(adminUser.ID, "none")
+		return c.Send("⛔ دسترسی ندارید.")
+	}
+
+	reason := strings.TrimSpace(text)
+	if reason == "" {
+		return c.Send("دلیل رد نمی‌تواند خالی باشد.")
+	}
+
+	orderID := strings.TrimSpace(adminUser.ProcessingValueTwo)
+	targetUserID := strings.TrimSpace(adminUser.ProcessingValueOne)
+	if orderID == "" || targetUserID == "" {
+		_ = b.repos.User.UpdateStep(adminUser.ID, "none")
+		return c.Send("اطلاعات پرداخت ناقص است. دوباره تلاش کنید.")
+	}
+
+	_ = b.repos.Payment.UpdateByOrderID(orderID, map[string]interface{}{
+		"payment_Status":    "reject",
+		"dec_not_confirmed": reason,
+		"at_updated":        fmt.Sprintf("%d", time.Now().Unix()),
+	})
+
+	notify := fmt.Sprintf("❌ پرداخت شما رد شد.\n🔖 سفارش: %s\n📝 دلیل: %s", orderID, reason)
+	_, _ = b.botAPI.SendMessage(targetUserID, notify, nil)
+
+	_ = b.repos.User.Update(adminUser.ID, map[string]interface{}{
+		"Processing_value_one": "",
+		"Processing_value_tow": "",
+	})
+	_ = b.repos.User.UpdateStep(adminUser.ID, "none")
 	return c.Send(fmt.Sprintf("❌ پرداخت %s رد شد.", orderID))
 }
 

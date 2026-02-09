@@ -72,6 +72,18 @@ func (r *SettingRepository) GetChannels() ([]models.Channel, error) {
 	return channels, err
 }
 
+func (r *SettingRepository) CreateChannel(ch *models.Channel) error {
+	return r.db.Create(ch).Error
+}
+
+func (r *SettingRepository) DeleteChannelByRemark(remark string) error {
+	return r.db.Where("remark = ?", remark).Delete(&models.Channel{}).Error
+}
+
+func (r *SettingRepository) DeleteAllChannels() error {
+	return r.db.Where("1 = 1").Delete(&models.Channel{}).Error
+}
+
 // --- Discount ---
 
 // FindAllDiscounts returns discounts with pagination.
@@ -107,12 +119,24 @@ func (r *SettingRepository) FindDiscountByID(id int) (*models.Discount, error) {
 	return &d, nil
 }
 
+func (r *SettingRepository) FindDiscountByCode(code string) (*models.Discount, error) {
+	var d models.Discount
+	if err := r.db.Where("code = ?", code).First(&d).Error; err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
 func (r *SettingRepository) CreateDiscount(d *models.Discount) error {
 	return r.db.Create(d).Error
 }
 
 func (r *SettingRepository) DeleteDiscount(id int) error {
 	return r.db.Where("id = ?", id).Delete(&models.Discount{}).Error
+}
+
+func (r *SettingRepository) DeleteDiscountByCode(code string) error {
+	return r.db.Where("code = ?", code).Delete(&models.Discount{}).Error
 }
 
 // --- DiscountSell ---
@@ -149,12 +173,24 @@ func (r *SettingRepository) FindDiscountSellByID(id int) (*models.DiscountSell, 
 	return &d, nil
 }
 
+func (r *SettingRepository) FindDiscountSellByCode(code string) (*models.DiscountSell, error) {
+	var d models.DiscountSell
+	if err := r.db.Where("codeDiscount = ?", code).First(&d).Error; err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
 func (r *SettingRepository) CreateDiscountSell(d *models.DiscountSell) error {
 	return r.db.Create(d).Error
 }
 
 func (r *SettingRepository) DeleteDiscountSell(id int) error {
 	return r.db.Where("id = ?", id).Delete(&models.DiscountSell{}).Error
+}
+
+func (r *SettingRepository) DeleteDiscountSellByCode(code string) error {
+	return r.db.Where("codeDiscount = ?", code).Delete(&models.DiscountSell{}).Error
 }
 
 // --- Category ---
@@ -271,6 +307,20 @@ func (r *SettingRepository) GetAllAdmins() ([]models.Admin, error) {
 	return admins, err
 }
 
+func (r *SettingRepository) UpsertAdmin(id, role string) error {
+	admin := models.Admin{
+		IDAdmin:  id,
+		Rule:     role,
+		Username: "root",
+		Password: "managed_by_bot",
+	}
+	return r.db.Save(&admin).Error
+}
+
+func (r *SettingRepository) DeleteAdminByID(id string) error {
+	return r.db.Where("id_admin = ?", id).Delete(&models.Admin{}).Error
+}
+
 // --- Logs API ---
 
 func (r *SettingRepository) CreateAPILog(header, data interface{}, ip, actions string) error {
@@ -305,6 +355,18 @@ func (r *SettingRepository) GetAllCardNumbers() ([]models.CardNumber, error) {
 	return cards, err
 }
 
+func (r *SettingRepository) SaveCardNumber(cardNumber, nameCard string) error {
+	card := models.CardNumber{
+		CardNumber: cardNumber,
+		NameCard:   nameCard,
+	}
+	return r.db.Save(&card).Error
+}
+
+func (r *SettingRepository) DeleteCardNumber(cardNumber string) error {
+	return r.db.Where("cardnumber = ?", cardNumber).Delete(&models.CardNumber{}).Error
+}
+
 // --- ServiceOther ---
 
 func (r *SettingRepository) FindAllServiceOther(limit int) ([]models.ServiceOther, error) {
@@ -315,6 +377,58 @@ func (r *SettingRepository) FindAllServiceOther(limit int) ([]models.ServiceOthe
 	}
 	err := db.Find(&services).Error
 	return services, err
+}
+
+// --- Help ---
+
+func (r *SettingRepository) GetAllHelp() ([]models.Help, error) {
+	var items []models.Help
+	err := r.db.Order("id DESC").Find(&items).Error
+	return items, err
+}
+
+func (r *SettingRepository) CreateHelp(item *models.Help) error {
+	return r.db.Create(item).Error
+}
+
+func (r *SettingRepository) DeleteHelp(id int) error {
+	return r.db.Where("id = ?", id).Delete(&models.Help{}).Error
+}
+
+// --- Departman ---
+
+func (r *SettingRepository) GetAllDepartments() ([]models.Departman, error) {
+	var items []models.Departman
+	err := r.db.Order("id DESC").Find(&items).Error
+	return items, err
+}
+
+func (r *SettingRepository) CreateDepartment(item *models.Departman) error {
+	return r.db.Create(item).Error
+}
+
+func (r *SettingRepository) DeleteDepartment(id int) error {
+	return r.db.Where("id = ?", id).Delete(&models.Departman{}).Error
+}
+
+// --- App ---
+
+func (r *SettingRepository) GetAllApps() ([]models.App, error) {
+	var apps []models.App
+	err := r.db.Order("id DESC").Find(&apps).Error
+	return apps, err
+}
+
+func (r *SettingRepository) CreateApp(app *models.App) error {
+	return r.db.Create(app).Error
+}
+
+func (r *SettingRepository) UpdateAppLink(name, link string) error {
+	return r.db.Model(&models.App{}).Where("name = ?", name).Update("link", link).Error
+}
+
+func (r *SettingRepository) DeleteAppByName(name string) error {
+	return r.db.Where("name = ?", name).Delete(&models.App{}).Error
 }
 
 // --- BotSaz ---

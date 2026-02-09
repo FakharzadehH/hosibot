@@ -61,6 +61,20 @@ func (r *UserRepository) FindByID(chatID string) (*models.User, error) {
 	return &user, nil
 }
 
+// FindByUsername finds a user by Telegram username (with or without leading @).
+func (r *UserRepository) FindByUsername(username string) (*models.User, error) {
+	u := strings.TrimSpace(strings.TrimPrefix(username, "@"))
+	if u == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	var user models.User
+	if err := r.db.Where("username = ?", u).First(&user).Error; err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
 // Create inserts a new user.
 func (r *UserRepository) Create(user *models.User) error {
 	return r.db.Create(user).Error

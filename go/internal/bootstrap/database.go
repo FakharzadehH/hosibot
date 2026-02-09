@@ -66,6 +66,9 @@ func seedDefaults(db *gorm.DB) error {
 		if err := ensureDefaultSetting(tx); err != nil {
 			return err
 		}
+		if err := ensureDefaultPaySettings(tx); err != nil {
+			return err
+		}
 		if err := ensureDefaultAffiliates(tx); err != nil {
 			return err
 		}
@@ -160,4 +163,42 @@ func ensureDefaultAffiliates(tx *gorm.DB) error {
 		IDMedia:          "",
 	}
 	return tx.Create(&row).Error
+}
+
+func ensureDefaultPaySettings(tx *gorm.DB) error {
+	defaults := map[string]string{
+		"minamount":                 "10000",
+		"maxamount":                 "500000000",
+		"cardnum":                   "",
+		"cardname":                  "",
+		"merchant_zarinpal":         "",
+		"merchant_id_aqayepardakht": "",
+		"marchent_floypay":          "",
+		"apiternado":                "",
+		"apinowpayment":             "",
+		"apikey_nowpayment":         "",
+		"marchent_tronseller":       "",
+		"walletaddress":             "",
+		"urlpaymenttron":            "",
+		"statuscardautoconfirm":     "offautoconfirm",
+		"autoconfirmcart":           "offauto",
+		"Exception_auto_cart":       "[]",
+		"chashbackcart":             "0",
+		"chashbackplisio":           "0",
+	}
+
+	for key, value := range defaults {
+		var count int64
+		if err := tx.Model(&models.PaySetting{}).Where("NamePay = ?", key).Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			continue
+		}
+		row := models.PaySetting{NamePay: key, ValuePay: value}
+		if err := tx.Create(&row).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
