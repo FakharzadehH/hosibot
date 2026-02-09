@@ -1,7 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -87,8 +91,7 @@ type JWTConfig struct {
 
 // Load reads configuration from .env file and environment variables.
 func Load() (*Config, error) {
-	// Load .env file (ignore error if missing)
-	_ = godotenv.Load()
+	loadEnvFiles()
 
 	viper.AutomaticEnv()
 
@@ -162,14 +165,78 @@ func Load() (*Config, error) {
 		},
 	}
 
-	if cfg.Database.Name == "" {
-		log.Println("WARNING: DB_NAME is not set")
-	}
-	if cfg.Bot.Token == "" {
-		log.Println("WARNING: BOT_TOKEN is not set")
+	missing := missingRequiredVars(cfg)
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("missing required environment variables: %s", strings.Join(missing, ", "))
 	}
 
 	return cfg, nil
+}
+
+func loadEnvFiles() {
+	candidates := []string{
+		".env",
+		"go/.env",
+		"../.env",
+	}
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		candidates = append(candidates,
+			filepath.Join(exeDir, ".env"),
+			filepath.Join(exeDir, "..", ".env"),
+			filepath.Join(exeDir, "..", "..", ".env"),
+		)
+	}
+
+	seen := make(map[string]bool, len(candidates))
+	for _, p := range candidates {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		if seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		if _, err := os.Stat(abs); err != nil {
+			continue
+		}
+		if err := godotenv.Load(abs); err == nil {
+			log.Printf("Loaded environment file: %s", abs)
+			return
+		}
+	}
+	log.Println("WARNING: no .env file found in common locations")
+}
+
+func missingRequiredVars(cfg *Config) []string {
+	missing := make([]string, 0, 8)
+	if strings.TrimSpace(cfg.Database.Host) == "" {
+		missing = append(missing, "DB_HOST")
+	}
+	if strings.TrimSpace(cfg.Database.Port) == "" {
+		missing = append(missing, "DB_PORT")
+	}
+	if strings.TrimSpace(cfg.Database.Name) == "" {
+		missing = append(missing, "DB_NAME")
+	}
+	if strings.TrimSpace(cfg.Database.User) == "" {
+		missing = append(missing, "DB_USER")
+	}
+	if strings.TrimSpace(cfg.Bot.Token) == "" {
+		missing = append(missing, "BOT_TOKEN")
+	}
+	if strings.TrimSpace(cfg.API.Key) == "" {
+		missing = append(missing, "API_KEY")
+	}
+	if strings.TrimSpace(cfg.JWT.Secret) == "" {
+		missing = append(missing, "JWT_SECRET")
+	}
+	return missing
 }
 
 // DSN returns the MySQL DSN string for GORM.
