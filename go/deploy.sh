@@ -715,9 +715,45 @@ bootstrap_database() {
       error "Database connection test failed for DB_USER with empty password."
       warn "Set DB_PASS in $ENV_FILE if your MySQL user requires a password."
     fi
+  else
+    if ! bootstrap_app_schema; then
+      warn "MySQL bootstrap finished, but app schema bootstrap failed."
+      warn "You can run it later with: $BIN_PATH --bootstrap-db"
+    fi
   fi
 
   pause
+}
+
+bootstrap_app_schema() {
+  load_env
+
+  info "Bootstrapping application schema and default rows"
+
+  if command -v go >/dev/null 2>&1 && [[ -f "$SCRIPT_DIR/go.mod" ]]; then
+    if (cd "$SCRIPT_DIR" && go run ./cmd --bootstrap-db); then
+      success "Application schema bootstrap completed via go run."
+      return 0
+    fi
+  fi
+
+  if [[ -x "$BIN_PATH" ]]; then
+    if command -v timeout >/dev/null 2>&1; then
+      if timeout 120 "$BIN_PATH" --bootstrap-db; then
+        success "Application schema bootstrap completed via binary."
+        return 0
+      fi
+      warn "Binary bootstrap mode failed/timed out (binary may be outdated)."
+    else
+      if "$BIN_PATH" --bootstrap-db; then
+        success "Application schema bootstrap completed via binary."
+        return 0
+      fi
+    fi
+  fi
+
+  error "Could not run app schema bootstrap. Build binary first or install Go toolchain."
+  return 1
 }
 
 install_dependencies() {
@@ -1511,11 +1547,15 @@ quick_deploy() {
 
   configure_env_wizard
 
-  if confirm "Bootstrap database and grants with current .env values?" "Y"; then
+  if confirm "Bootstrap MySQL (db/user/grants) with current .env values?" "Y"; then
     bootstrap_database
   fi
 
   build_binary
+
+  if confirm "Run app schema bootstrap (migrations + defaults)?" "Y"; then
+    bootstrap_app_schema || true
+  fi
 
   if confirm "Install/update systemd service?" "Y"; then
     install_systemd_service
@@ -1637,7 +1677,7 @@ main_menu() {
 10) Systemd service manager
 11) Telegram webhook manager
 12) Diagnostics / health check
-13) Bootstrap database (DB_NAME/DB_USER/DB_PASS)
+13) Bootstrap DB (MySQL + app schema)
 14) Backup .env
 15) Exit
 MENU
@@ -1675,7 +1715,7 @@ Options:
   --remove         Remove Hosibot service/binary/runtime (optional DB/.env cleanup)
   --quick-deploy   Run quick deploy flow
   --build          Download latest release binary
-  --bootstrap-db   Create DB/user/grants from .env and verify connection
+  --bootstrap-db   Bootstrap MySQL + app schema/default rows
   --health         Run diagnostics
   --set-webhook    Configure Telegram webhook
   --help           Show this help
