@@ -366,25 +366,36 @@ install_redis_stack() {
 }
 
 start_mysql_service() {
-  if ! command -v systemctl >/dev/null 2>&1; then
-    warn "systemctl not found; skipping automatic DB service start"
-    return
+  local svc
+  if command -v systemctl >/dev/null 2>&1; then
+    for svc in mysql mariadb mysqld; do
+      if systemctl list-unit-files | awk '{print $1}' | grep -qx "${svc}.service"; then
+        run_root systemctl enable --now "${svc}.service" || true
+        if systemctl is-active --quiet "${svc}.service"; then
+          success "Database service is active: ${svc}.service"
+        else
+          warn "Database service exists but is not active: ${svc}.service"
+        fi
+        return
+      fi
+    done
   fi
 
-  local svc
-  for svc in mysql mariadb mysqld; do
-    if systemctl list-unit-files | awk '{print $1}' | grep -qx "${svc}.service"; then
-      run_root systemctl enable --now "${svc}.service" || true
-      if systemctl is-active --quiet "${svc}.service"; then
-        success "Database service is active: ${svc}.service"
-      else
-        warn "Database service exists but is not active: ${svc}.service"
+  if command -v service >/dev/null 2>&1; then
+    for svc in mysql mariadb mysqld; do
+      if [[ -x "/etc/init.d/$svc" ]]; then
+        run_root service "$svc" start >/dev/null 2>&1 || true
+        if run_root service "$svc" status >/dev/null 2>&1; then
+          success "Database service is active: $svc (SysV init)"
+        else
+          warn "Database service start attempted via SysV init: $svc"
+        fi
+        return
       fi
-      return
-    fi
-  done
+    done
+  fi
 
-  warn "No mysql/mariadb systemd service unit detected"
+  warn "No mysql/mariadb service unit detected (systemd/SysV)."
 }
 
 start_redis_service() {
@@ -413,6 +424,7 @@ mysql_ini_get_option() {
   local file="$1"
   local key="$2"
   local content=""
+  local wanted section raw line k v
 
   if [[ -r "$file" ]]; then
     content="$(cat "$file" 2>/dev/null || true)"
@@ -424,30 +436,41 @@ mysql_ini_get_option() {
     return 0
   fi
 
-  printf "%s\n" "$content" | awk -v wanted="$(printf "%s" "$key" | tr '[:upper:]' '[:lower:]')" '
-    function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
-    BEGIN { section="" }
-    /^[ \t]*[;#]/ { next }
-    /^[ \t]*\[/ {
-      section=tolower($0)
-      gsub(/[ \t\[\]]/, "", section)
-      next
-    }
-    {
-      line=$0
-      sub(/[ \t]*[;#].*$/, "", line)
-      if (line !~ /=/) next
-      k=line; sub(/=.*/, "", k); k=tolower(trim(k))
-      v=line; sub(/^[^=]*=/, "", v); v=trim(v)
-      if (
-        k==wanted &&
-        (section=="client" || section=="mysql" || section=="mysqladmin" || section=="mysql_upgrade" || section=="client-server")
-      ) {
-        print v
-        exit
-      }
-    }
-  ' | head -n1
+  wanted="$(printf "%s" "$key" | tr '[:upper:]' '[:lower:]')"
+  section=""
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    line="$(printf "%s" "$raw" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [[ -z "$line" ]] && continue
+    [[ "${line:0:1}" == "#" || "${line:0:1}" == ";" ]] && continue
+
+    if [[ "$line" =~ ^\[(.*)\]$ ]]; then
+      section="${BASH_REMATCH[1],,}"
+      section="${section//[[:space:]]/}"
+      continue
+    fi
+
+    if [[ "$section" != "client" && "$section" != "mysql" && "$section" != "mysqladmin" && "$section" != "mysql_upgrade" && "$section" != "client-server" ]]; then
+      continue
+    fi
+
+    [[ "$line" == *"="* ]] || continue
+    k="${line%%=*}"
+    v="${line#*=}"
+
+    k="$(printf "%s" "$k" | tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    v="$(printf "%s" "$v" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+    if [[ "${v:0:1}" == "\"" && "${v: -1}" == "\"" ]]; then
+      v="${v:1:${#v}-2}"
+    elif [[ "${v:0:1}" == "'" && "${v: -1}" == "'" ]]; then
+      v="${v:1:${#v}-2}"
+    fi
+
+    if [[ "$k" == "$wanted" ]]; then
+      printf "%s\n" "$v"
+      return 0
+    fi
+  done <<<"$content"
 }
 
 discover_mysql_admin_config() {
