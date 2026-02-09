@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"gorm.io/driver/mysql"
@@ -18,8 +19,18 @@ func NewDatabase(cfg *DatabaseConfig) (*gorm.DB, error) {
 	// Use Info level for development
 	// logLevel = logger.Info
 
+	gormLogger := logger.New(
+		log.New(os.Stdout, "\r\n", log.LstdFlags),
+		logger.Config{
+			SlowThreshold:             time.Second,
+			LogLevel:                  logLevel,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  false,
+		},
+	)
+
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger:                                   logger.Default.LogMode(logLevel),
+		Logger:                                   gormLogger,
 		DisableForeignKeyConstraintWhenMigrating: true,
 		PrepareStmt:                              true,
 	})

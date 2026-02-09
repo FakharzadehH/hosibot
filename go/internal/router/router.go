@@ -102,14 +102,17 @@ func Setup(
 
 	// Telegram webhook (protected by IP check + deduplication)
 	if webhookHandler != nil {
+		// Non-tokenized webhook path: keep strict Telegram IP allowlist.
 		botWebhookGroup := e.Group("/bot")
 		botWebhookGroup.Use(middleware.TelegramIPCheck())
 		botWebhookGroup.Use(middleware.TelegramUpdateDedup(updateDeduper))
 		botWebhookGroup.POST("/webhook", echo.WrapHandler(webhookHandler))
 
-		// Legacy webhook route for backward compatibility.
+		// Legacy tokenized webhook route: validate path token and deduplicate.
+		// We intentionally avoid strict IP filtering here because many setups
+		// sit behind reverse proxies/CDN and RealIP may not be Telegram's egress IP.
 		webhookGroup := e.Group("/webhook")
-		webhookGroup.Use(middleware.TelegramIPCheck())
+		webhookGroup.Use(middleware.TelegramPathTokenCheck())
 		webhookGroup.Use(middleware.TelegramUpdateDedup(updateDeduper))
 		webhookGroup.POST("/:token", echo.WrapHandler(webhookHandler))
 	} else {

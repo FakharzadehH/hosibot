@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -138,6 +139,24 @@ func TelegramIPCheck() echo.MiddlewareFunc {
 				!strings.HasPrefix(ip, "91.108.") &&
 				ip != "127.0.0.1" &&
 				ip != "::1" {
+				return c.String(http.StatusForbidden, "Forbidden")
+			}
+			return next(c)
+		}
+	}
+}
+
+// TelegramPathTokenCheck validates /webhook/:token against BOT_TOKEN.
+// This is useful behind reverse proxies/CDN where source IP checks may fail.
+func TelegramPathTokenCheck() echo.MiddlewareFunc {
+	expected := strings.TrimSpace(os.Getenv("BOT_TOKEN"))
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if expected == "" {
+				return c.String(http.StatusForbidden, "Forbidden")
+			}
+			got := strings.TrimSpace(c.Param("token"))
+			if subtle.ConstantTimeCompare([]byte(got), []byte(expected)) != 1 {
 				return c.String(http.StatusForbidden, "Forbidden")
 			}
 			return next(c)

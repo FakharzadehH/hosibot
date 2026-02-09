@@ -2,6 +2,7 @@ package repository
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -207,6 +208,9 @@ func (r *SettingRepository) DeleteCategory(id int) error {
 func (r *SettingRepository) GetPaySetting(name string) (string, error) {
 	var ps models.PaySetting
 	if err := r.db.Where("NamePay = ?", name).First(&ps).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
 		return "", err
 	}
 	return ps.ValuePay, nil
@@ -225,6 +229,9 @@ func (r *SettingRepository) GetAllPaySettings() ([]models.PaySetting, error) {
 func (r *SettingRepository) GetShopSetting(name string) (string, error) {
 	var ss models.ShopSetting
 	if err := r.db.Where("Namevalue = ?", name).First(&ss).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", nil
+		}
 		return "", err
 	}
 	return ss.Value, nil
